@@ -9,6 +9,90 @@
 
 using namespace OpenSubdiv;
 
+// ===================================================================
+//  Debug dump utilities — callable from lldb:
+//    ? exec dumpMesh(mesh, 5)
+//    ? exec dumpFace(face, 0)
+//    ? exec dumpCatmarkMesh(surface, 10)
+// ===================================================================
+
+static void dumpVertex(MeshVertex* v, int idx)
+{
+    auto& d = v->GetData();
+    printf("  v%03d: pos=(%.6f,%.6f,%.6f) N=(%.4f,%.4f,%.4f) ndotv=%.6g facing=%d radial=%d\n",
+           idx, (double)d.pos[0], (double)d.pos[1], (double)d.pos[2],
+           (double)d.normal[0], (double)d.normal[1], (double)d.normal[2],
+           (double)d.ndotv, d.facing, d.Radial());
+    if (d.Radial())
+        printf("         radialOrg[0]=%p [1]=%p\n", (void*)d.radialOrg[0], (void*)d.radialOrg[1]);
+    printf("         k1=%.6g k2=%.6g cusp=%d extr=%d isShift=%d age=%d\n",
+           (double)d.k1, (double)d.k2, d.cusp, d.extraordinary, d.isShifted, d.age);
+}
+
+static void dumpFace(MeshFace* face, int idx)
+{
+    int nv = face->GetNumVertices();
+    printf("Face %03d [%d verts]: ", idx, nv);
+    for (int vi = 0; vi < nv; vi++) {
+        auto& d = face->GetVertex(vi)->GetData();
+        char s = d.ndotv > 1e-8 ? '+' : d.ndotv < -1e-8 ? '-' : '0';
+        printf("%c(%.4g) ", s, (double)d.ndotv);
+    }
+    printf("\n");
+    for (int vi = 0; vi < nv; vi++)
+        dumpVertex(face->GetVertex(vi), vi);
+}
+
+static void dumpMesh(Mesh* mesh, int maxFaces = 20)
+{
+    printf("\n=== MESH DUMP ===\n");
+    std::list<MeshFace*> facelist;
+    mesh->GetFaces(std::back_inserter(facelist));
+    printf("Faces: %lu  (showing first %d)\n", facelist.size(), maxFaces);
+    int fi = 0;
+    for (auto it = facelist.begin(); it != facelist.end() && fi < maxFaces; ++it, ++fi)
+        dumpFace(*it, fi);
+    printf("=== END MESH DUMP ===\n\n");
+}
+
+// --- Catmark (control mesh) dumps ---
+
+static void dumpCatmarkVertex(CatmarkVertex* v, int idx)
+{
+    vec3 pos = v->GetData().GetPos();
+    printf("  cv%03d: pos=(%.4f,%.4f,%.4f) boundary=%d valence=%d\n",
+           idx, (double)pos[0], (double)pos[1], (double)pos[2],
+           v->OnBoundary(), v->GetValence());
+}
+
+static void dumpCatmarkFace(CatmarkFace* face, int idx)
+{
+    int nv = face->GetNumVertices();
+    printf("CFace %03d [%d verts] depth=%d hasLimit=%d: ", idx, nv,
+           face->GetDepth(), face->HasLimit());
+    for (int vi = 0; vi < nv; vi++)
+        printf("cv%d ", face->GetVertex(vi)->GetID());
+    printf("\n");
+    for (int vi = 0; vi < nv; vi++)
+        dumpCatmarkVertex(face->GetVertex(vi), vi);
+}
+
+static void dumpCatmarkMesh(CatmarkMesh* cm, int maxFaces = 10)
+{
+    printf("\n=== CATMARK MESH DUMP ===\n");
+    printf("Verts: %d  Faces: %d  Coarse: %d\n",
+           cm->GetNumVertices(), cm->GetNumFaces(), cm->GetNumCoarseFaces());
+    std::list<CatmarkFace*> facelist;
+    cm->GetFaces(std::back_inserter(facelist));
+    printf("Faces: %lu  (showing first %d)\n", facelist.size(), maxFaces);
+    int fi = 0;
+    for (auto it = facelist.begin(); it != facelist.end() && fi < maxFaces; ++it, ++fi)
+        dumpCatmarkFace(*it, fi);
+    printf("=== END CATMARK DUMP ===\n\n");
+}
+
+// ===================================================================
+
 // Build a simple combined view-projection camera matrix
 static CameraModel makeSimpleCamera(const vec3& eye, float width, float height)
 {
