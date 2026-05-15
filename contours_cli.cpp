@@ -43,7 +43,7 @@ static void dumpFace(MeshFace* face, int idx)
         dumpVertex(face->GetVertex(vi), vi);
 }
 
-static void dumpMesh(Mesh* mesh, int maxFaces = 20)
+static void dumpMesh(Mesh* mesh, int maxFaces = 99999)
 {
     printf("\n=== MESH DUMP ===\n");
     std::list<MeshFace*> facelist;
@@ -77,7 +77,7 @@ static void dumpCatmarkFace(CatmarkFace* face, int idx)
         dumpCatmarkVertex(face->GetVertex(vi), vi);
 }
 
-static void dumpCatmarkMesh(CatmarkMesh* cm, int maxFaces = 10)
+static void dumpCatmarkMesh(CatmarkMesh* cm, int maxFaces = 99999)
 {
     printf("\n=== CATMARK MESH DUMP ===\n");
     printf("Verts: %d  Faces: %d  Coarse: %d\n",
@@ -251,7 +251,9 @@ int main(int argc, char** argv)
         std::cerr << "Failed to build surface\n";
         return 1;
     }
-
+    
+    dumpCatmarkMesh(surface);
+    
     // Set up camera
     float imgW = 640.0f, imgH = 480.0f;
     CameraModel camera = makeSimpleCamera(cameraPos, imgW, imgH);

@@ -2,12 +2,13 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug contours_cli (cube)",
+            "name": "Debug contours_cli (icosphere check)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/contours_cli",
-            "args": ["cube", "-subd", "1"],
+            "args": ["icosphere", "-subd", "2", "--check"],
             "stopAtEntry": false,
+            "preLaunchTask": "build contours",
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": false,
