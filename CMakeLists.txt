@@ -13,11 +13,23 @@ target_include_directories(hbr INTERFACE
 
 # ---- OpenSubdiv: osdutil (static lib, minimal) ----
 set(OSDUTIL_DIR tess_RifFilter/opensubdiv/osdutil)
+set(OSD_DIR tess_RifFilter/opensubdiv/osd)
+
 set(OSDUTIL_SOURCES
     ${OSDUTIL_DIR}/adaptiveEvaluator.cpp
     ${OSDUTIL_DIR}/topology.cpp
     ${OSDUTIL_DIR}/refiner.cpp
     ${OSDUTIL_DIR}/mesh.cpp
+    # osd cpu backend (needed by adaptiveEvaluator)
+    ${OSD_DIR}/cpuComputeContext.cpp
+    ${OSD_DIR}/cpuComputeController.cpp
+    ${OSD_DIR}/cpuEvalLimitContext.cpp
+    ${OSD_DIR}/cpuEvalLimitController.cpp
+    ${OSD_DIR}/cpuEvalLimitKernel.cpp
+    ${OSD_DIR}/cpuKernel.cpp
+    ${OSD_DIR}/cpuVertexBuffer.cpp
+    ${OSD_DIR}/evalLimitContext.cpp
+    ${OSD_DIR}/error.cpp
 )
 add_library(osdutil STATIC ${OSDUTIL_SOURCES})
 target_include_directories(osdutil PUBLIC
@@ -50,4 +62,9 @@ target_link_libraries(tess_RifFilter PUBLIC osdutil)
 
 message(STATUS "Contours build configured")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "  Targets: hbr (header-only), osdutil, tess_RifFilter")
+message(STATUS "  Targets: hbr (header-only), osdutil, tess_RifFilter, contours_cli")
+
+# ---- Standalone CLI test driver ----
+add_executable(contours_cli contours_cli.cpp)
+target_include_directories(contours_cli PRIVATE tess_RifFilter)
+target_link_libraries(contours_cli PRIVATE tess_RifFilter osdutil)

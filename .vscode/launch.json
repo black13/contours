@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug contours_cli (cube)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/contours_cli",
+            "args": ["cube", "-subd", "1"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "logging": {
+                "trace": false,
+                "traceResponse": false
+            }
+        }
+    ]
+}
