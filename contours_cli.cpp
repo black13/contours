@@ -154,10 +154,25 @@ CatmarkMesh* buildCylinder(float radius, float height, int segments)
     return mesh;
 }
 
+CatmarkMesh* buildTetrahedron(float size)
+{
+    static HbrCatmarkSubdivision<Vertex> catmark;
+    CatmarkMesh* mesh = new CatmarkMesh(&catmark);
+    mesh->SetInterpolateBoundaryMethod(CatmarkMesh::k_InterpolateBoundaryEdgeOnly);
+
+    float s = size / sqrtf(2.0f);
+    float v[4][3] = {{ s, s, s}, { s,-s,-s}, {-s, s,-s}, {-s,-s, s}};
+    for (int i = 0; i < 4; i++)
+        mesh->NewVertex(i, Vertex(v[i][0], v[i][1], v[i][2]));
+    int f[4][3] = {{0,2,1}, {0,1,3}, {0,3,2}, {1,2,3}};
+    for (int i = 0; i < 4; i++)
+        mesh->NewFace(3, f[i], i);
+    mesh->Finish();
+    return mesh;
+}
+
 CatmarkMesh* buildArch(float width, float height, float depth, int segments)
 {
-    // Half-cylinder on a box base — simplified to a cube for now
-    // Real arch would need a sweep surface
     return buildCube(std::max(width, height));
 }
 
@@ -199,7 +214,7 @@ CatmarkMesh* buildIcosahedron()
 void printUsage(const char* prog)
 {
     std::cout << "Usage: " << prog << " <primitive> [options]\n"
-              << "  primitives: cube, arch, icosphere, cylinder\n"
+              << "  primitives: tetra, cube, icosphere\n"
               << "  options:\n"
               << "    -subd N      subdivision level (default: 3)\n"
               << "    -size S      size (default: 2.0)\n"
@@ -234,7 +249,9 @@ int main(int argc, char** argv)
     }
 
     CatmarkMesh* surface = nullptr;
-    if (primitive == "cube" || primitive == "arch") {
+    if (primitive == "tetra")
+        surface = buildTetrahedron(size);
+    else if (primitive == "cube" || primitive == "arch") {
         std::cerr << "building cube...\n";
         surface = buildCube(size);
         std::cerr << "cube built\n";
