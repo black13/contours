@@ -25,8 +25,10 @@
 #include "../system/TimeStamp.h"
 #include "../system/PseudoNoise.h"
 #include "Canvas.h"
+#ifndef FREESTYLE_NO_QT
 #include <qimage.h>
 #include <QString>
+#endif
 #include "../image/Image.h"
 #include "../image/GaussianFilter.h"
 #include "../image/ImagePyramid.h"
@@ -325,6 +327,7 @@ void Canvas::RenderBasic(const StrokeRenderer *iRenderer)
 }
 
 void Canvas::loadMap(const char *iFileName, const char *iMapName, unsigned int iNbLevels, float iSigma){
+#ifndef FREESTYLE_NO_QT
     // check whether this map was already loaded:
     if(!_maps.empty()){
         mapsMap::iterator m = _maps.find(iMapName);
@@ -426,6 +429,10 @@ void Canvas::loadMap(const char *iFileName, const char *iMapName, unsigned int i
     //
     _maps[iMapName] = pyramid;
     //  newMap->save("toto.bmp", "BMP");
+#else
+    (void)iFileName; (void)iMapName; (void)iNbLevels; (void)iSigma;
+    // QImage not available — texture maps not supported
+#endif
 }
 
 float Canvas::readMapPixel(const char *iMapName, int level, int x, int y){

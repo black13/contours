@@ -20,21 +20,21 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #include <fstream>
-#include <qimage.h>
 #include "BasicStrokeShaders.h"
-#include "../system/PseudoNoise.h"
-#include "../system/RandGen.h"
-#include "../view_map/Functions0D.h"
-#include "../view_map/Functions1D.h"
-#include "AdvancedFunctions0D.h"
-#include "AdvancedFunctions1D.h"
 #include "StrokeIterators.h"
-#include "../system/StringUtils.h"
+#include "StrokeAdvancedIterators.h"
+#include "../system/RandGen.h"
+#include "../system/PseudoNoise.h"
+#include "../view_map/Functions1D.h"
 #include "StrokeRenderer.h"
 #include "StrokeIO.h"
+#ifndef FREESTYLE_NO_QT
+#include <qimage.h>
 #include <QString>
+#endif
 
-// Internal function
+#ifndef FREESTYLE_NO_QT
+// Internal function — requires QImage (Qt)
 void convert(const QImage& iImage, float **oArray, unsigned &oSize) {
   oSize = iImage.width();
   *oArray = new float[oSize];
@@ -43,6 +43,7 @@ void convert(const QImage& iImage, float **oArray, unsigned &oSize) {
     (*oArray)[i] = ((float)qBlue(rgb))/255.f;
   }
 }
+#endif
 
 namespace StrokeShaders {
 
@@ -172,23 +173,22 @@ namespace StrokeShaders {
     _stretch = stretch;
     _minThickness = iMinThickness;
     _maxThickness = iMaxThickness;
+#ifndef FREESTYLE_NO_QT
     QImage image;
     vector<string> pathnames;
     StringUtils::getPathName(TextureManager::Options::getPatternsPath(),
-			     pattern_name,
-			     pathnames);
+			     pattern_name, pathnames);
     for (vector<string>::const_iterator j = pathnames.begin(); j != pathnames.end(); j++) {
       ifstream ifs(j->c_str());
-      if (ifs.is_open()) {
-	image.load(j->c_str());
-	break;
-      }
+      if (ifs.is_open()) { image.load(j->c_str()); break; }
     }
     if (image.isNull())
-      cerr << "Error: cannot find pattern \"" << pattern_name
-	   << "\" - check the path in the Options" << endl;
+      cerr << "Error: cannot find pattern \"" << pattern_name << "\"" << endl;
     else
       convert(image, &_aThickness, _size);
+#else
+    (void)pattern_name; _aThickness = NULL; _size = 0;
+#endif
   }
   
   void ThicknessVariationPatternShader::shade(Stroke& stroke) const
@@ -315,23 +315,22 @@ namespace StrokeShaders {
 							   bool stretch)
     : StrokeShader() {
     _stretch = stretch;
+#ifndef FREESTYLE_NO_QT
     QImage image;
     vector<string> pathnames;
     StringUtils::getPathName(TextureManager::Options::getPatternsPath(),
-			     pattern_name,
-			     pathnames);
+			     pattern_name, pathnames);
     for (vector<string>::const_iterator j = pathnames.begin(); j != pathnames.end(); j++) {
       ifstream ifs(j->c_str());
-      if (ifs.is_open()) {
-	image.load(j->c_str());
-	break;
-      }
+      if (ifs.is_open()) { image.load(j->c_str()); break; }
     }
     if (image.isNull())
-      cerr << "Error: cannot find pattern \"" << pattern_name
-	   << "\" - check the path in the Options" << endl;
+      cerr << "Error: cannot find pattern \"" << pattern_name << "\"" << endl;
     else
       convert(image, &_aVariation, _size);
+#else
+    (void)pattern_name; _aVariation = NULL; _size = 0;
+#endif
   }
   
   void ColorVariationPatternShader::shade(Stroke& stroke) const

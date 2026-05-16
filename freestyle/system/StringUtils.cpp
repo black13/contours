@@ -19,7 +19,6 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
-#include <QFileInfo>
 #include "FreestyleConfig.h"
 #include "StringUtils.h"
 
@@ -35,8 +34,7 @@ namespace StringUtils {
       if (sep == (unsigned)string::npos)
 	sep = size;
       dir = path.substr(pos, sep - pos);
-      QFileInfo fi(dir.c_str());
-      string res = fi.absoluteFilePath().toStdString();
+      string res = dir;  // use path as-is (no QFileInfo)
       if (!base.empty())
 	res += Config::DIR_SEP + base;
       pathnames.push_back(res);
