@@ -1,4 +1,4 @@
-#include <iostream>
+#include <cstdio>
 #include <vector>
 #include <string>
 #include "tess_RifFilter/refineContour.h"
@@ -312,7 +312,7 @@ int main(int argc, char** argv)
               << "  Inconsistent contour: " << numIncContour << "\n"
               << "  Inconsistent radial: " << numIncRadial << "\n";
 
-    // ---- Per-face invariant walk (--check mode) ----
+    // ---- Per-face invariant walk (check mode) ----
     if (checkMode) {
         std::cerr << "PER-FACE CHECK STARTING\n";
         int allSame = 0, radialOk = 0, violations = 0;

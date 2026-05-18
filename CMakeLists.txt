@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Contours VERSION 1.0 LANGUAGES CXX)
+project(Contours VERSION 1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -174,9 +174,13 @@ add_executable(contours_cli contours_cli.cpp)
 target_include_directories(contours_cli PRIVATE tess_RifFilter)
 target_link_libraries(contours_cli PRIVATE tess_RifFilter osdutil)
 
+# ---- Freestyle NPR renderer (PLY → EPS) ----
+add_executable(freestyle_render freestyle_render.cpp)
+target_link_libraries(freestyle_render PRIVATE fs_stroke)
+
 message(STATUS "Contours build configured")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  OpenSubdiv: hbr, osdutil, tess_RifFilter")
 message(STATUS "  Freestyle:  fs_geometry fs_image fs_scene_graph fs_system")
 message(STATUS "              fs_winged_edge fs_view_map fs_stroke")
-message(STATUS "  CLI: contours_cli")
+message(STATUS "  CLI: contours_cli, freestyle_render")

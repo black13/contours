@@ -11,7 +11,7 @@ using namespace std;
 // Shewchuk's orientation code
 extern "C"
 {
-  void exactinit(); // this must be called before any calls to orient
+  extern "C" void exactinit(); // this must be called before any calls to orient
   //  real orient2d(real * real *, real*);
   real orient3d(real *,real*,real*,real*);
 }

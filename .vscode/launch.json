@@ -12,11 +12,19 @@
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": false,
-            "MIMode": "lldb",
-            "logging": {
-                "trace": false,
-                "traceResponse": false
-            }
+            "MIMode": "lldb"
+        },
+        {
+            "name": "Debug freestyle_render",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build_fs/freestyle_render",
+            "args": ["output_refined.0.ply"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
         }
     ]
 }

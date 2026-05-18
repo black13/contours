@@ -18,11 +18,13 @@
 //
 ///////////////////////////////////////////////////////////////////////////////
 
+#ifndef FREESTYLE_NO_OPENGL
 # ifdef __MACH__
 #  include <OpenGL/gl.h>
 # else
 #  include <GL/gl.h>
 # endif
+#endif
 
 #include "ViewMap.h"
 #include "../geometry/GeomUtils.h"
@@ -62,15 +64,6 @@ unsigned int getName(void*obj)
     mapObjName[obj] = name;
     return name;
 }
-
-void setRegion(unsigned int name, int regionIndex) { mapNameRegion[name] = regionIndex; }
-int getRegion(unsigned int name) { 
-    map<unsigned int,int>::iterator it = mapNameRegion.find(name);
-    if (it == mapNameRegion.end()) return -1; else return (*it).second; }
-void resetNames() { mapObjName.clear(); mapNameRegion.clear(); }
-
-//void *getObj(unsigned int name);
-
 
 // ----------------------------------------
 
@@ -2029,7 +2022,7 @@ const SShape * ViewEdge::occluded_shape() const
     if(0 == _aShape)
         return 0;
     return _aShape->sshape();
-}  
+}
 
 // inline Vec3r ViewEdge::curvature2d_as_vector(int iCombination) const 
 // {
@@ -2436,6 +2429,7 @@ void ViewMap::addRIFDebugPoint(DebugPoint::PointType ptType, Vec3r point3D, char
 
 
 
+#ifndef FREESTYLE_NO_OPENGL
 void ViewMap::render3D(bool selectionMode, DebugVisOptions options)
 {
     Vec3r selectionColor(1,1,0);
@@ -2981,4 +2975,6 @@ void ViewMap::render3D(bool selectionMode, DebugVisOptions options)
     }
 
 }
+
+#endif // FREESTYLE_NO_OPENGL
 
