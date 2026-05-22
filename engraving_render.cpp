@@ -379,6 +379,119 @@ static std::vector<Stroke> groundShadowPass(
     return strokes;
 }
 
+// ── Pass 5: Face-filling curve — single continuous path per face ────
+// For each visible face, generates one hatching path that fills the
+// face area.  The path sweeps across the face perpendicular to the
+// stroke direction (cross(n, v)), bouncing at the polygon edges.
+// Result: one connected curve per face that fills the face interior.
+static std::vector<Stroke> faceFillPass(
+    WingedEdge* we, const Camera& cam, const Vec3r& lightPos,
+    int linesPerFace, double falloffExp)
+{
+    std::vector<Stroke> strokes;
+
+    for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
+        WShape* shape = *sit;
+        for (auto fit = shape->GetFaceList().begin(); fit != shape->GetFaceList().end(); ++fit) {
+            WXFace* wxf = dynamic_cast<WXFace*>(*fit);
+            if (!wxf) continue;
+            Vec3r normal = wxf->GetNormal();
+            Vec3r center = wxf->center();
+            if (!cam.isFrontFacing(normal, center)) continue;
+
+            // Get face vertex positions
+            std::vector<WVertex*> wvlist;
+            wxf->RetrieveVertexList(wvlist);
+            int nv = (int)wvlist.size();
+            if (nv < 3) continue;
+            std::vector<Vec3r> verts3d;
+            for (auto wv : wvlist) verts3d.push_back(wv->GetVertex());
+
+            // Stroke direction: cross(n, view_dir)
+            Vec3r vd = cam.position - center;
+            vd.normalize();
+            Vec3r sd3 = normal ^ vd;
+            double sdn = sd3.norm();
+            if (sdn < 1e-9) sd3 = normal ^ Vec3r(0,1,0);
+            else sd3 = sd3 * (1.0/sdn);
+
+            // Light on this face
+            Vec3r tl = lightPos - center;
+            double dLight = tl.norm();
+            double ndotl = 0.0;
+            if (dLight > 1e-9) { tl = tl * (1.0/dLight); ndotl = std::max(0.0, normal*tl); }
+            double lightWeight = 1.0 - ndotl;
+
+            // Project face vertices to 2D and find stroke direction
+            std::vector<std::pair<double,double>> poly2d;
+            for (auto& v : verts3d) {
+                double vx, vy;
+                cam.projectPoint(v, 800, 600, vx, vy);
+                poly2d.push_back({vx, vy});
+            }
+
+            // Stroke direction in 2D (project a point offset along sd3)
+            double cx, cy, sdx, sdy;
+            cam.projectPoint(center, 800, 600, cx, cy);
+            cam.projectPoint(center + sd3 * 0.01, 800, 600, sdx, sdy);
+            sdx -= cx; sdy -= cy;
+            double slen = sqrt(sdx*sdx + sdy*sdy);
+            if (slen < 1e-9) continue;
+            sdx /= slen; sdy /= slen;
+            double spx = -sdy, spy = sdx;  // perpendicular
+
+            // Sweep bounds
+            double dMin = 1e30, dMax = -1e30;
+            for (auto& p : poly2d) {
+                double d = spx * p.first + spy * p.second;
+                if (d < dMin) dMin = d;
+                if (d > dMax) dMax = d;
+            }
+            double span = dMax - dMin;
+            if (span < 1.0) continue;
+
+            // Generate sweep lines
+            for (int li = 0; li < linesPerFace; li++) {
+                double t = (li + 0.5) / linesPerFace;
+                double offset = dMin + t * span;
+
+                // Find intersections of sweep line with polygon
+                std::vector<std::pair<double,double>> hits;
+                for (int ei = 0; ei < nv; ei++) {
+                    int ej = (ei + 1) % nv;
+                    double da = spx*poly2d[ei].first + spy*poly2d[ei].second - offset;
+                    double db = spx*poly2d[ej].first + spy*poly2d[ej].second - offset;
+                    if (da * db > 0) continue;
+                    if (fabs(da - db) < 1e-12) continue;
+                    double lt = da / (da - db);
+                    hits.push_back({
+                        poly2d[ei].first + lt * (poly2d[ej].first - poly2d[ei].first),
+                        poly2d[ei].second + lt * (poly2d[ej].second - poly2d[ei].second)
+                    });
+                }
+                if (hits.size() < 2) continue;
+                // Sort hits along stroke direction for consistent orientation
+                std::sort(hits.begin(), hits.end(),
+                    [&](const std::pair<double,double>& a, const std::pair<double,double>& b) {
+                        return sdx*a.first+sdy*a.second < sdx*b.first+sdy*b.second;
+                    });
+
+                // Emit line segments connecting sequential hit pairs
+                for (size_t hi = 0; hi + 1 < hits.size(); hi += 2) {
+                    double thick = 0.08 + 0.30 * lightWeight;
+                    double gray = 0.08 + 0.45 * lightWeight;
+                    strokes.push_back({
+                        hits[hi].first, hits[hi].second,
+                        hits[hi+1].first, hits[hi+1].second,
+                        thick, gray
+                    });
+                }
+            }
+        }
+    }
+    return strokes;
+}
+
 int main(int argc, char** argv) {
     Args args(argc, argv);
 
@@ -615,11 +728,19 @@ int main(int argc, char** argv) {
 
     std::cerr << "Shadow strokes: " << shadowStrokes.size() << "\n";
 
+    // ── Face fill hatching ─────────────────────────────────────────
+    std::vector<Stroke> fillStrokes = faceFillPass(
+        we, cam, lightPos, 6, falloffExp);
+
+    std::cerr << "Face fill strokes: " << fillStrokes.size() << "\n";
+
     // ── Output ─────────────────────────────────────────────────────
     if (useSvg) {
         std::ofstream svg(svgPath);
         svgHeader(svg, 800, 600);
         for (auto& st : strokes)
+            svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+        for (auto& st : fillStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         for (auto& st : facetStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
@@ -637,6 +758,11 @@ int main(int argc, char** argv) {
         double ox = (595.0 - 800.0 * scale) / 2.0;
         double oy = (842.0 - 600.0 * scale) / 2.0;
         for (auto& st : strokes) {
+            pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
+                           ox + st.x2 * scale, oy + st.y2 * scale,
+                           st.width * scale * 0.5, st.gray);
+        }
+        for (auto& st : fillStrokes) {
             pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
                            ox + st.x2 * scale, oy + st.y2 * scale,
                            st.width * scale * 0.5, st.gray);
