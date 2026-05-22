@@ -1,9 +1,15 @@
 // engraving_render.cpp — Monte Carlo light-eroded engraving in C++
+// =================================================================
 //
-// Loads a PLY, builds winged-edge, classifies faces by front/back,
-// then generates strokes using Monte Carlo sampling on visible faces.
-// Light erodes darkness via Lambert × 1/r² falloff.
-// Output is SVG with varying stroke-width and gray per line.
+// Loads PLY → builds winged-edge → classifies faces → Monte Carlo
+// stroke generation → output PDF or SVG.
+//
+// Usage:
+//   engraving_render input.ply --output out.pdf --samples 3000
+//   engraving_render input.ply --svg out.svg  --light-x 1 --light-y 4 --light-z 3
+//
+// Depends on the contours Freestyle library and our engraving/
+// helpers (camera.h, args.h, pdf_writer.h).
 
 #include <iostream>
 #include <fstream>
@@ -12,15 +18,21 @@
 #include <cmath>
 #include <random>
 #include <algorithm>
+#include <map>
+
 #include "scene_graph/PLYFileLoader.h"
 #include "winged_edge/WXEdgeBuilder.h"
 #include "winged_edge/Nature.h"
 #include "view_map/FEdgeXDetector.h"
 #include "view_map/SilhouetteGeomEngine.h"
 
+#include "engraving/camera.h"
+#include "engraving/args.h"
+#include "engraving/pdf_writer.h"
+
 using Geometry::Vec3r;
 
-// ── SVG helpers ──────────────────────────────────────────────────────
+// ── SVG helpers (kept for --svg flag) ─────────────────────────────────
 
 static void svgHeader(std::ostream& out, int w, int h) {
     out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -43,107 +55,30 @@ static void svgLine(std::ostream& out,
         << " stroke-linecap=\"round\"/>\n";
 }
 
-// ── Perspective projection ───────────────────────────────────────────
+// ── Monte Carlo stroke generation ─────────────────────────────────────
 
-static void projectPoint(const Vec3r& pt, const Vec3r& camPos,
-                         const Vec3r& forward, const Vec3r& right, const Vec3r& up,
-                         int imgW, int imgH, float fovY,
-                         double& outX, double& outY) {
-    Vec3r rel = pt - camPos;
-    double x = rel * right;
-    double y = rel * up;
-    double z = rel * forward;
-    if (z < 1e-6) z = 1e-6;
-    double aspect = (double)imgW / (double)imgH;
-    double tanHalfFov = tan(fovY * M_PI / 360.0);
-    double ndcX = x / (z * tanHalfFov * aspect);
-    double ndcY = y / (z * tanHalfFov);
-    outX = (ndcX + 1.0) * 0.5 * imgW;
-    outY = (1.0 - (ndcY + 1.0) * 0.5) * imgH;
-}
+struct Stroke {
+    double x1, y1, x2, y2, width, gray;
+};
 
-// ── Main ──────────────────────────────────────────────────────────────
+static std::vector<Stroke> generateStrokes(
+    WingedEdge* we,
+    const Camera& cam,
+    const Vec3r& lightPos,
+    int numSamples,
+    double falloffExp,
+    int seed)
+{
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
 
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <input.ply> [--svg out.svg] [--samples N]"
-                  << " [--light-x X] [--light-y Y] [--light-z Z] [--seed S]\n";
-        return 1;
-    }
-
-    std::string plyPath = argv[1];
-    std::string svgPath = "engraving.svg";
-    int numSamples = 2000;
-    Vec3r lightPos(1.0, 4.0, 3.0);
-    int seed = 42;
-    double falloffExp = 2.0;
-
-    for (int i = 2; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "--svg" && i + 1 < argc) svgPath = argv[++i];
-        else if (arg == "--samples" && i + 1 < argc) numSamples = atoi(argv[++i]);
-        else if (arg == "--light-x" && i + 1 < argc) lightPos[0] = atof(argv[++i]);
-        else if (arg == "--light-y" && i + 1 < argc) lightPos[1] = atof(argv[++i]);
-        else if (arg == "--light-z" && i + 1 < argc) lightPos[2] = atof(argv[++i]);
-        else if (arg == "--seed" && i + 1 < argc) seed = atoi(argv[++i]);
-        else if (arg == "--falloff" && i + 1 < argc) falloffExp = atof(argv[++i]);
-    }
-
-    // 1. Load PLY
-    PLYFileLoader loader(plyPath.c_str());
-    NodeGroup* root = loader.Load();
-    if (!root) { std::cerr << "PLY load failed\n"; return 1; }
-
-    // 2. Build winged-edge
-    WXEdgeBuilder wxBuilder;
-    root->accept(wxBuilder);
-    WingedEdge* we = wxBuilder.getWingedEdge();
-    if (!we) { std::cerr << "Winged-edge build failed\n"; return 1; }
-
-    // 3. Set up camera + silhouette engine
-    Vec3r camPos(2.8, 2.0, 3.5);
-    Vec3r camTarget(0, 0, 0);
-    Vec3r forward = camTarget - camPos; forward.normalize();
-    Vec3r worldUp(0, 1, 0);
-    Vec3r rgt = forward ^ worldUp; rgt.normalize();
-    Vec3r up = rgt ^ forward; up.normalize();
-    int imgW = 800, imgH = 600;
-    float fovY = 35.0f;
-
-    // Set up SilhouetteGeomEngine (needed by FEdgeXDetector, even
-    // though we compute front-facing ourselves)
-    real mv[4][4] = {{0}};
-    real proj[4][4] = {{0}};
-    int vp[4] = {0, 0, imgW, imgH};
-    mv[0][0]=1; mv[1][1]=1; mv[2][2]=1; mv[3][3]=1;
-    mv[3][2] = -5.0f;
-    float aspect = (float)imgW / (float)imgH;
-    float f = 1.0f / tanf(fovY * (float)M_PI / 360.0f);
-    proj[0][0] = f / aspect; proj[1][1] = f;
-    proj[2][2] = -1.0f; proj[2][3] = -1.0f;
-    proj[3][2] = -2.0f * 0.1f * 100.0f / (100.0f - 0.1f);
-    SilhouetteGeomEngine* sge = SilhouetteGeomEngine::getInstance();
-    sge->SetViewpoint(Vec3r(0, 0, 5));
-    sge->SetTransform(mv, proj, vp, 1.0f);
-
-    // 4. Run detector (needed for edge classification on silhouette edges)
-    FEdgeXDetector detector;
-    detector.SetViewpoint(Vec3r(0, 0, 5));
-    detector.enableRidgesAndValleysFlag(true);
-    detector.enableSuggestiveContours(true);
-    detector.processShapes(*we);
-
-    // 5. Collect visible faces with their centers, normals, and areas
+    // Collect visible faces
     struct FaceInfo {
-        int id;
         Vec3r center;
         Vec3r normal;
-        double area;
-        double ndotl;  // light dot product (for sorting/stats)
-        WXFace* ptr;
+        double ndotl;
     };
     std::vector<FaceInfo> visibleFaces;
-    double totalArea = 0.0;
 
     for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
         WShape* shape = *sit;
@@ -152,10 +87,8 @@ int main(int argc, char** argv) {
             if (!wxf) continue;
             Vec3r center = wxf->center();
             Vec3r normal = wxf->GetNormal();
-            Vec3r viewDir = camPos - center;
-            if (normal * viewDir <= 0) continue;  // back-facing
+            if (!cam.isFrontFacing(normal, center)) continue;
 
-            // Light on this face center
             Vec3r toLight = lightPos - center;
             double dist = toLight.norm();
             double ndotl = 0.0;
@@ -163,49 +96,25 @@ int main(int argc, char** argv) {
                 Vec3r lightDir = toLight; lightDir.normalize();
                 ndotl = std::max(0.0, normal * lightDir);
             }
-
-            // Approximate area from the winged-edge face bounding edges
-            // For now, use 1.0 as placeholder — uniform sampling
-            double area = 1.0;
-
-            FaceInfo fi = {wxf->GetId(), center, normal, area, ndotl, wxf};
-            visibleFaces.push_back(fi);
-            totalArea += area;
+            visibleFaces.push_back({center, normal, ndotl});
         }
     }
 
-    if (visibleFaces.empty()) {
-        std::cerr << "No visible faces\n";
-        return 0;
-    }
+    std::cerr << "Visible faces: " << visibleFaces.size() << "\n";
 
-    std::cerr << "Visible faces: " << visibleFaces.size()
-              << "  Light at (" << lightPos[0] << "," << lightPos[1] << "," << lightPos[2] << ")\n";
-
-    // 6. Monte Carlo stroke generation
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<double> unit(0.0, 1.0);
-
-    struct Stroke {
-        double x1, y1, x2, y2, width, gray;
-    };
     std::vector<Stroke> strokes;
+    int nf = (int)visibleFaces.size();
+    if (nf == 0) return strokes;
 
     for (int s = 0; s < numSamples; s++) {
-        // Pick a random visible face — weighted by area for importance sampling
-        double r = unit(rng) * totalArea;
-        double cumulative = 0.0;
-        int chosen = 0;
-        for (int i = 0; i < (int)visibleFaces.size(); i++) {
-            cumulative += visibleFaces[i].area;
-            if (r <= cumulative) { chosen = i; break; }
-        }
+        int fi = (int)(unit(rng) * nf);
+        if (fi >= nf) fi = nf - 1;
 
-        FaceInfo& fi = visibleFaces[chosen];
-        Vec3r center = fi.center;
-        Vec3r normal = fi.normal;
+        FaceInfo& info = visibleFaces[fi];
+        Vec3r center = info.center;
+        Vec3r normal = info.normal;
 
-        // Light intensity at face center: Lambert × 1/r^falloff
+        // Light intensity: Lambert × 1/r^falloff
         Vec3r toLight = lightPos - center;
         double dist = toLight.norm();
         double lightIntensity = 0.0;
@@ -216,46 +125,130 @@ int main(int argc, char** argv) {
         }
 
         // View obliquity
-        Vec3r viewDir = camPos - center;
+        Vec3r viewDir = cam.position - center;
         double vlen = viewDir.norm();
         if (vlen < 1e-9) continue;
         viewDir = viewDir * (1.0 / vlen);
         double ndotv = std::max(0.01, fabs(normal * viewDir));
         double viewWeight = 1.0 - ndotv * 0.7;
 
-        // Stroke probability: light erodes, obliquity enhances
+        // Stroke probability
         double strokeProb = std::max(0.01, std::min(1.0, (1.0 - lightIntensity) * viewWeight));
         if (unit(rng) > strokeProb) continue;
 
-        // Stroke direction: cross(normal, viewDir) — follows face grain
+        // Stroke direction: cross(normal, viewDir)
         Vec3r sd3 = normal ^ viewDir;
         double sdNorm = sd3.norm();
         if (sdNorm < 1e-9) sd3 = normal ^ Vec3r(0, 1, 0);
         else sd3 = sd3 * (1.0 / sdNorm);
 
-        // Stroke endpoints
         double halfLen = 15.0 * strokeProb * 0.5 * 0.02;
         Vec3r ptA = center - sd3 * halfLen;
         Vec3r ptB = center + sd3 * halfLen;
 
         double x1, y1, x2, y2;
-        projectPoint(ptA, camPos, forward, rgt, up, imgW, imgH, fovY, x1, y1);
-        projectPoint(ptB, camPos, forward, rgt, up, imgW, imgH, fovY, x2, y2);
+        cam.projectPoint(ptA, 800, 600, x1, y1);
+        cam.projectPoint(ptB, 800, 600, x2, y2);
 
         double thick = 0.10 + 0.55 * (1.0 - strokeProb);
         double gray = 0.03 + 0.52 * (1.0 - strokeProb);
 
         strokes.push_back({x1, y1, x2, y2, thick, gray});
     }
+    return strokes;
+}
 
-    // 7. Write SVG
-    std::ofstream svg(svgPath);
-    svgHeader(svg, imgW, imgH);
-    for (auto& st : strokes)
-        svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
-    svgFooter(svg);
-    svg.close();
+// ── main ──────────────────────────────────────────────────────────────
 
-    std::cerr << "Wrote " << strokes.size() << " strokes to " << svgPath << "\n";
+int main(int argc, char** argv) {
+    Args args(argc, argv);
+
+    if (args.getString("--input").empty() && argc < 2) {
+        std::cerr << "Usage: " << args.program
+                  << " <input.ply> [--output out.pdf|--svg out.svg]\n"
+                  << "  --samples N     Monte Carlo samples (default 2000)\n"
+                  << "  --light-x/y/z   point light position (default 1,4,3)\n"
+                  << "  --falloff N     light falloff exponent (default 2 = 1/r^2)\n"
+                  << "  --seed N        random seed (default 42)\n"
+                  << "  --svg PATH      output SVG instead of PDF\n";
+        return 1;
+    }
+
+    std::string plyPath = (argc >= 2 && argv[1][0] != '-')
+        ? argv[1] : args.getString("--input");
+    std::string outPath = args.getString("--output", "engraving.pdf");
+    std::string svgPath = args.getString("--svg", "");
+    bool useSvg = !svgPath.empty();
+
+    int numSamples = args.getInt("--samples", 2000);
+    int seed = args.getInt("--seed", 42);
+    double falloffExp = args.getDouble("--falloff", 2.0);
+
+    Vec3r lightPos(
+        args.getDouble("--light-x", 1.0),
+        args.getDouble("--light-y", 4.0),
+        args.getDouble("--light-z", 3.0)
+    );
+
+    // ── Load PLY ──
+    PLYFileLoader loader(plyPath.c_str());
+    NodeGroup* root = loader.Load();
+    if (!root) { std::cerr << "PLY load failed\n"; return 1; }
+
+    // ── Build winged-edge ──
+    WXEdgeBuilder wxBuilder;
+    root->accept(wxBuilder);
+    WingedEdge* we = wxBuilder.getWingedEdge();
+    if (!we) { std::cerr << "Winged-edge build failed\n"; return 1; }
+
+    // ── Camera ──
+    Camera cam;
+
+    // ── Set up silhouette engine (needed by detector) ──
+    real mv[4][4] = {{0}};
+    real proj[4][4] = {{0}};
+    int vp[4] = {0, 0, 800, 600};
+    mv[0][0]=1; mv[1][1]=1; mv[2][2]=1; mv[3][3]=1; mv[3][2] = -5.0f;
+    float f = 1.0f / tanf(35.0f * (float)M_PI / 360.0f);
+    proj[0][0] = f / (800.0f/600.0f); proj[1][1] = f;
+    proj[2][2] = -1.0f; proj[2][3] = -1.0f; proj[3][2] = -0.2f;
+    SilhouetteGeomEngine* sge = SilhouetteGeomEngine::getInstance();
+    sge->SetViewpoint(Vec3r(0, 0, 5));
+    sge->SetTransform(mv, proj, vp, 1.0f);
+
+    // ── Run detector ──
+    FEdgeXDetector detector;
+    detector.SetViewpoint(Vec3r(0, 0, 5));
+    detector.enableRidgesAndValleysFlag(true);
+    detector.enableSuggestiveContours(true);
+    detector.processShapes(*we);
+
+    // ── Generate strokes ──
+    std::vector<Stroke> strokes = generateStrokes(
+        we, cam, lightPos, numSamples, falloffExp, seed);
+
+    // ── Output ──
+    if (useSvg) {
+        std::ofstream svg(svgPath);
+        svgHeader(svg, 800, 600);
+        for (auto& st : strokes)
+            svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+        svgFooter(svg);
+        svg.close();
+        std::cerr << "Wrote " << strokes.size() << " strokes to " << svgPath << "\n";
+    } else {
+        PDFWriter pdf(outPath, 595.0, 842.0);
+        double sx = 595.0 / 800.0;
+        double sy = 842.0 / 600.0;
+        for (auto& st : strokes) {
+            pdf.strokeLine(
+                st.x1 * sx, st.y1 * sy,
+                st.x2 * sx, st.y2 * sy,
+                st.width * sx * 0.5, st.gray);
+        }
+        pdf.save();
+        std::cerr << "Wrote " << strokes.size() << " strokes to " << outPath << "\n";
+    }
+
     return 0;
 }

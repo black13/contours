@@ -178,8 +178,9 @@ target_link_libraries(contours_cli PRIVATE tess_RifFilter osdutil)
 add_executable(freestyle_render freestyle_render.cpp)
 target_link_libraries(freestyle_render PRIVATE fs_stroke)
 
-# ---- Monte Carlo engraving renderer (PLY → SVG) ----
+# ---- Monte Carlo engraving renderer (PLY → PDF/SVG) ----
 add_executable(engraving_render engraving_render.cpp)
+target_include_directories(engraving_render PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(engraving_render PRIVATE fs_winged_edge fs_view_map fs_scene_graph fs_geometry)
 
 message(STATUS "Contours build configured")
