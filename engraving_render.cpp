@@ -494,39 +494,105 @@ int main(int argc, char** argv) {
 
     std::cerr << "Silhouette edges: " << silStrokes.size() << "\n";
 
+    // ── Facet edges (visible seams) ────────────────────────────────
+    // Edges where BOTH adjacent faces are front-facing — the interior
+    // seams of the visible surface.  Drawn as thin light lines to
+    // reveal the facet structure without competing with the silhouette.
+    // Also scratchy by default: subdivided into short light segments.
+    std::vector<Stroke> facetStrokes;
+    for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
+        WShape* shape = *sit;
+        for (auto eit = shape->GetEdgeList().begin();
+             eit != shape->GetEdgeList().end(); ++eit) {
+            WXEdge* edge = dynamic_cast<WXEdge*>(*eit);
+            if (!edge) continue;
+            WXFace* fa = dynamic_cast<WXFace*>(edge->GetaFace());
+            WXFace* fb = dynamic_cast<WXFace*>(edge->GetbFace());
+            if (!fa || !fb) continue;
+            bool frontA = cam.isFrontFacing(fa->GetNormal(), fa->center());
+            bool frontB = cam.isFrontFacing(fb->GetNormal(), fb->center());
+            if (frontA != frontB) continue;   // silhouette, already handled
+            if (!frontA || !frontB) continue;  // both back, hidden
+
+            // Both faces front-facing — this is a visible seam
+            Vec3r pa3 = edge->GetaVertex()->GetVertex();
+            Vec3r pb3 = edge->GetbVertex()->GetVertex();
+
+            if (scratchy) {
+                unsigned edgeHash = (unsigned)(pa3[0]*7919 + pa3[1]*6271 + pa3[2]*5171);
+                std::mt19937 edgeRng(edgeHash + seed + 9999);
+                std::uniform_real_distribution<double> eunit(-1.0, 1.0);
+
+                double ex1, ey1, ex2, ey2;
+                cam.projectPoint(pa3, 800, 600, ex1, ey1);
+                cam.projectPoint(pb3, 800, 600, ex2, ey2);
+                double edx = ex2 - ex1, edy = ey2 - ey1;
+                double edLen = sqrt(edx*edx + edy*edy);
+                if (edLen < 1.0) continue;
+                Vec3r edgeDir = pb3 - pa3;
+                double px = -edy / edLen, py = edx / edLen;
+                // Fewer segments, lighter touch than silhouette
+                int fSub = std::max(2, silSubdiv / 2);
+
+                for (int seg = 0; seg < fSub; seg++) {
+                    double t0 = (double)seg / fSub;
+                    double t1 = (double)(seg + 1) / fSub;
+                    Vec3r s3a = pa3 + edgeDir * t0;
+                    Vec3r s3b = pa3 + edgeDir * t1;
+
+                    double jx = eunit(edgeRng) * silJitter * 0.4;
+                    double jy = eunit(edgeRng) * silJitter * 0.4;
+                    double sx1, sy1, sx2, sy2;
+                    cam.projectPoint(s3a, 800, 600, sx1, sy1);
+                    cam.projectPoint(s3b, 800, 600, sx2, sy2);
+                    sx1 += px * jx * 0.5; sy1 += py * jx * 0.5;
+                    sx2 += px * jy * 0.5; sy2 += py * jy * 0.5;
+
+                    facetStrokes.push_back({sx1, sy1, sx2, sy2, 0.3, 0.55});
+                }
+            } else {
+                double x1, y1, x2, y2;
+                cam.projectPoint(pa3, 800, 600, x1, y1);
+                cam.projectPoint(pb3, 800, 600, x2, y2);
+                facetStrokes.push_back({x1, y1, x2, y2, 0.35, 0.55});
+            }
+        }
+    }
+
+    std::cerr << "Facet edges: " << facetStrokes.size() << "\n";
+
     // ── Output ─────────────────────────────────────────────────────
     if (useSvg) {
         std::ofstream svg(svgPath);
         svgHeader(svg, 800, 600);
-        // Silhouette edges first (behind strokes? no — on top, bold)
         for (auto& st : strokes)
+            svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+        for (auto& st : facetStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         for (auto& st : silStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         svgFooter(svg);
         svg.close();
-        std::cerr << "Wrote " << strokes.size() + silStrokes.size()
+        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size()
                   << " strokes to " << svgPath << "\n";
     } else {
-        // Map 800×600 image coords to A4 portrait (595×842 PDF points)
         PDFWriter pdf(outPath, 595.0, 842.0);
         double sx = 595.0 / 800.0;
         double sy = 842.0 / 600.0;
         for (auto& st : strokes) {
-            pdf.strokeLine(
-                st.x1 * sx, st.y1 * sy,
-                st.x2 * sx, st.y2 * sy,
-                st.width * sx * 0.5, st.gray);
+            pdf.strokeLine(st.x1 * sx, st.y1 * sy, st.x2 * sx, st.y2 * sy,
+                           st.width * sx * 0.5, st.gray);
         }
-        // Silhouette edges: bold (1.2pt × scale) and dark (gray 0.02)
+        for (auto& st : facetStrokes) {
+            pdf.strokeLine(st.x1 * sx, st.y1 * sy, st.x2 * sx, st.y2 * sy,
+                           st.width * sx * 0.5, st.gray);
+        }
         for (auto& st : silStrokes) {
-            pdf.strokeLine(
-                st.x1 * sx, st.y1 * sy,
-                st.x2 * sx, st.y2 * sy,
-                1.0, 0.02);
+            pdf.strokeLine(st.x1 * sx, st.y1 * sy, st.x2 * sx, st.y2 * sy,
+                           1.0, 0.02);
         }
         pdf.save();
-        std::cerr << "Wrote " << strokes.size() + silStrokes.size()
+        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size()
                   << " strokes to " << outPath << "\n";
     }
 
