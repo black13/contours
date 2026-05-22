@@ -334,7 +334,11 @@ int main(int argc, char** argv) {
                   << "  --light-x/y/z   point light position (default 1,4,3)\n"
                   << "  --falloff N     light falloff exponent (default 2 = 1/r^2)\n"
                   << "  --seed N        random seed (default 42)\n"
-                  << "  --svg PATH      output SVG instead of PDF\n";
+                  << "  --svg PATH      output SVG instead of PDF\n"
+                  << "  --clean         draw silhouette as single bold line\n"
+                  << "                  (default: scratchy, short jittered strokes)\n"
+                  << "  --sil-jitter N  silhouette jitter in px (default 2.5)\n"
+                  << "  --sil-subdiv N  silhouette sub-segments per edge (default 8)\n";
         return 1;
     }
 
@@ -397,15 +401,20 @@ int main(int argc, char** argv) {
         we, cam, lightPos, numSamples, falloffExp, seed);
 
     // ── Silhouette edges ───────────────────────────────────────────
-    // An edge is silhouette if exactly ONE of its two adjacent faces
-    // is front-facing.  These edges form the occluding contour — the
-    // boundary between visible and hidden surface.  We draw them as
-    // bold dark lines to anchor the scattered strokes.
+    // Two modes:
+    //   --scratchy (default)   — short overlapping jittered strokes
+    //                            simulating a hand sketching the boundary
+    //   --clean                — single bold line per silhouette edge
     //
-    // Algorithm: iterate all edges in the winged-edge.  For each edge
-    // with two adjacent faces, check front/back status of both.  If
-    // one is front and the other back, project the edge endpoints
-    // and emit a bold dark Stroke.
+    // The scratchy approach breaks each silhouette edge into N short
+    // segments, displaces each perpendicular to the edge by random
+    // jitter, and varies the stroke angle, length, and pressure.
+    // The result: the boundary reads as a form, but it's built from
+    // many small imperfect marks — more like a drawing hand.
+    bool scratchy = !args.hasFlag("--clean");
+    double silJitter = args.getDouble("--sil-jitter", 2.5);   // px displacement
+    int silSubdiv = args.getInt("--sil-subdiv", 8);           // segments per edge
+
     std::vector<Stroke> silStrokes;
     for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
         WShape* shape = *sit;
@@ -415,18 +424,71 @@ int main(int argc, char** argv) {
             if (!edge) continue;
             WXFace* fa = dynamic_cast<WXFace*>(edge->GetaFace());
             WXFace* fb = dynamic_cast<WXFace*>(edge->GetbFace());
-            if (!fa || !fb) continue;  // border edge — skip
+            if (!fa || !fb) continue;
             bool frontA = cam.isFrontFacing(fa->GetNormal(), fa->center());
             bool frontB = cam.isFrontFacing(fb->GetNormal(), fb->center());
-            if (frontA == frontB) continue;  // both front or both back
+            if (frontA == frontB) continue;
 
-            // Silhouette edge — project endpoints and emit bold dark stroke
-            WVertex* va = edge->GetaVertex();
-            WVertex* vb = edge->GetbVertex();
-            double x1, y1, x2, y2;
-            cam.projectPoint(va->GetVertex(), 800, 600, x1, y1);
-            cam.projectPoint(vb->GetVertex(), 800, 600, x2, y2);
-            silStrokes.push_back({x1, y1, x2, y2, 1.2, 0.02});
+            // Silhouette edge found
+            Vec3r pa3 = edge->GetaVertex()->GetVertex();
+            Vec3r pb3 = edge->GetbVertex()->GetVertex();
+
+            if (scratchy) {
+                // ── Scratchy: N short jittered segments ────────────
+                // Use a seeded RNG per edge for reproducibility
+                // Hash edge vertices for deterministic per-edge seed
+                unsigned edgeHash = (unsigned)(pa3[0]*7919 + pa3[1]*6271 + pa3[2]*5171);
+                std::mt19937 edgeRng(edgeHash + seed);
+                std::uniform_real_distribution<double> eunit(-1.0, 1.0);
+
+                // Edge direction in 3D and 2D
+                double ex1, ey1, ex2, ey2;
+                cam.projectPoint(pa3, 800, 600, ex1, ey1);
+                cam.projectPoint(pb3, 800, 600, ex2, ey2);
+                double edx = ex2 - ex1, edy = ey2 - ey1;
+                double edLen = sqrt(edx*edx + edy*edy);
+                if (edLen < 1.0) continue;
+                Vec3r edgeDir = pb3 - pa3;
+                double edgeLen3 = edgeDir.norm();
+
+                for (int seg = 0; seg < silSubdiv; seg++) {
+                    double t0 = (double)seg / silSubdiv;
+                    double t1 = (double)(seg + 1) / silSubdiv;
+
+                    // 3D sub-segment endpoints along the edge
+                    Vec3r s3a = pa3 + edgeDir * t0;
+                    Vec3r s3b = pa3 + edgeDir * t1;
+
+                    // Jitter displacement perpendicular to edge in 2D
+                    double jx = eunit(edgeRng) * silJitter;
+                    double jy = eunit(edgeRng) * silJitter;
+                    // Perpendicular direction in 2D
+                    double px = -edy / edLen, py = edx / edLen;
+
+                    double sx1, sy1, sx2, sy2;
+                    cam.projectPoint(s3a, 800, 600, sx1, sy1);
+                    cam.projectPoint(s3b, 800, 600, sx2, sy2);
+
+                    // Offset perpendicular
+                    sx1 += px * jx * 0.5;
+                    sy1 += py * jx * 0.5;
+                    sx2 += px * jy * 0.5;
+                    sy2 += py * jy * 0.5;
+
+                    // Vary thickness and pressure
+                    double pressure = 0.6 + 0.4 * fabs(eunit(edgeRng));
+                    double thick = 0.6 + 0.4 * pressure;
+                    double gray = 0.02 + 0.08 * (1.0 - pressure);
+
+                    silStrokes.push_back({sx1, sy1, sx2, sy2, thick, gray});
+                }
+            } else {
+                // ── Clean: single bold line ────────────────────────
+                double x1, y1, x2, y2;
+                cam.projectPoint(pa3, 800, 600, x1, y1);
+                cam.projectPoint(pb3, 800, 600, x2, y2);
+                silStrokes.push_back({x1, y1, x2, y2, 1.2, 0.02});
+            }
         }
     }
 
