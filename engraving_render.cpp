@@ -739,7 +739,7 @@ int main(int argc, char** argv) {
 
     // ── Face fill hatching ─────────────────────────────────────────
     std::vector<Stroke> fillStrokes = faceFillPass(
-        we, cam, lightPos, 6, falloffExp);
+        we, cam, lightPos, args.getInt("--fill-lines", 12), falloffExp);
 
     std::cerr << "Face fill strokes: " << fillStrokes.size() << "\n";
 
@@ -759,7 +759,7 @@ int main(int argc, char** argv) {
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         svgFooter(svg);
         svg.close();
-        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size() + shadowStrokes.size()
+        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size() + shadowStrokes.size() + fillStrokes.size()
                   << " strokes to " << svgPath << "\n";
     } else {
         PDFWriter pdf(outPath, 595.0, 842.0);
@@ -805,6 +805,7 @@ int main(int argc, char** argv) {
         }
         pdf.save();
         std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size()
+                           + shadowStrokes.size() + fillStrokes.size()
                   << " strokes to " << outPath << "\n";
     }
 
