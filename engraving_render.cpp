@@ -338,7 +338,46 @@ static std::vector<Stroke> generateStrokes(
     return strokes;
 }
 
-// ── main — entry point ─────────────────────────────────────────────────
+// ── Pass 4: Ground shadow — object casts shadow onto the floor ──────
+// A simple ground quad below the object.  Shadow rays from ground
+// points toward the light: if the winged-edge object blocks the ray,
+// the point is in shadow.  Brute-force face-plane check — Embree
+// would accelerate this with a BVH.
+static std::vector<Stroke> groundShadowPass(
+    WingedEdge* we, const Camera& cam, const Vec3r& lightPos,
+    int numSamples, int seed)
+{
+    std::mt19937 rng(seed + 7777);
+    std::uniform_real_distribution<double> unit(-2.0, 2.0);
+    std::vector<Stroke> strokes;
+
+    for (int s = 0; s < numSamples; s++) {
+        Vec3r groundPt(unit(rng), -2.0, unit(rng));  // y=-2 floor
+
+        Vec3r toLight = lightPos - groundPt;
+        double rayLen = toLight.norm();
+        if (rayLen < 1e-9) continue;
+        Vec3r rayDir = toLight * (1.0 / rayLen);
+
+        bool occluded = false;
+        for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end() && !occluded; ++sit)
+            for (auto fit = (*sit)->GetFaceList().begin(); fit != (*sit)->GetFaceList().end(); ++fit) {
+                WXFace* wxf = dynamic_cast<WXFace*>(*fit);
+                if (!wxf) continue;
+                double denom = wxf->GetNormal() * rayDir;
+                if (denom >= -1e-9) continue;
+                double t = (wxf->GetNormal() * (wxf->center() - groundPt)) / denom;
+                if (t > 1e-6 && t < rayLen - 1e-6) { occluded = true; break; }
+            }
+
+        if (!occluded) continue;
+
+        double x, y;
+        cam.projectPoint(groundPt, 800, 600, x, y);
+        strokes.push_back({x - 4.0, y, x + 4.0, y, 0.12, 0.20});
+    }
+    return strokes;
+}
 
 int main(int argc, char** argv) {
     Args args(argc, argv);
@@ -570,6 +609,12 @@ int main(int argc, char** argv) {
 
     std::cerr << "Facet edges: " << facetStrokes.size() << "\n";
 
+    // ── Ground shadow ───────────────────────────────────────────────
+    std::vector<Stroke> shadowStrokes = groundShadowPass(
+        we, cam, lightPos, numSamples / 2, seed);
+
+    std::cerr << "Shadow strokes: " << shadowStrokes.size() << "\n";
+
     // ── Output ─────────────────────────────────────────────────────
     if (useSvg) {
         std::ofstream svg(svgPath);
@@ -580,21 +625,36 @@ int main(int argc, char** argv) {
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         for (auto& st : silStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+        for (auto& st : shadowStrokes)
+            svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         svgFooter(svg);
         svg.close();
-        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size()
+        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size() + shadowStrokes.size()
                   << " strokes to " << svgPath << "\n";
     } else {
         PDFWriter pdf(outPath, 595.0, 842.0);
-        // Fit 800×600 image into A4 portrait, preserving aspect ratio
         double scale = std::min(595.0 / 800.0, 842.0 / 600.0);
         double ox = (595.0 - 800.0 * scale) / 2.0;
         double oy = (842.0 - 600.0 * scale) / 2.0;
         for (auto& st : strokes) {
-            pdf.strokeLine(
-                ox + st.x1 * scale, oy + st.y1 * scale,
-                ox + st.x2 * scale, oy + st.y2 * scale,
-                st.width * scale * 0.5, st.gray);
+            pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
+                           ox + st.x2 * scale, oy + st.y2 * scale,
+                           st.width * scale * 0.5, st.gray);
+        }
+        for (auto& st : facetStrokes) {
+            pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
+                           ox + st.x2 * scale, oy + st.y2 * scale,
+                           st.width * scale * 0.5, st.gray);
+        }
+        for (auto& st : silStrokes) {
+            pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
+                           ox + st.x2 * scale, oy + st.y2 * scale,
+                           1.0, 0.02);
+        }
+        for (auto& st : shadowStrokes) {
+            pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
+                           ox + st.x2 * scale, oy + st.y2 * scale,
+                           st.width * scale * 0.5, st.gray);
         }
         for (auto& st : facetStrokes) {
             pdf.strokeLine(
