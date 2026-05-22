@@ -178,9 +178,13 @@ target_link_libraries(contours_cli PRIVATE tess_RifFilter osdutil)
 add_executable(freestyle_render freestyle_render.cpp)
 target_link_libraries(freestyle_render PRIVATE fs_stroke)
 
+# ---- Monte Carlo engraving renderer (PLY → SVG) ----
+add_executable(engraving_render engraving_render.cpp)
+target_link_libraries(engraving_render PRIVATE fs_winged_edge fs_view_map fs_scene_graph fs_geometry)
+
 message(STATUS "Contours build configured")
 message(STATUS "  C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "  OpenSubdiv: hbr, osdutil, tess_RifFilter")
 message(STATUS "  Freestyle:  fs_geometry fs_image fs_scene_graph fs_system")
 message(STATUS "              fs_winged_edge fs_view_map fs_stroke")
-message(STATUS "  CLI: contours_cli, freestyle_render")
+message(STATUS "  CLI: contours_cli, freestyle_render, engraving_render")
