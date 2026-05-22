@@ -112,6 +112,23 @@
 
 using Geometry::Vec3r;
 
+// ── Simple 1D smooth noise (Perlin-like) ────────────────────────────
+// Produces a continuous wavy signal along the edge — each silhouette
+// edge gets a unique but smooth wobble pattern instead of random jitter.
+// This simulates a hand that trembles continuously, not randomly.
+
+static double noise1d(double x, unsigned seed) {
+    int n = (int)(x * 1000.0 + seed * 137);
+    n = (n << 13) ^ n;
+    return ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0 - 1.0;
+}
+
+static double smoothNoise1d(double x, double freq, unsigned seed) {
+    return noise1d(x * freq, seed) * 0.5
+         + noise1d(x * freq + 0.5, seed) * 0.3
+         + noise1d(x * freq + 1.0, seed) * 0.2;
+}
+
 // ── SVG helpers (kept for --svg flag) ─────────────────────────────────
 //
 // SVG is simpler than PDF for debugging — open in any browser.
@@ -434,14 +451,14 @@ int main(int argc, char** argv) {
             Vec3r pb3 = edge->GetbVertex()->GetVertex();
 
             if (scratchy) {
-                // ── Scratchy: N short jittered segments ────────────
-                // Use a seeded RNG per edge for reproducibility
-                // Hash edge vertices for deterministic per-edge seed
-                unsigned edgeHash = (unsigned)(pa3[0]*7919 + pa3[1]*6271 + pa3[2]*5171);
-                std::mt19937 edgeRng(edgeHash + seed);
-                std::uniform_real_distribution<double> eunit(-1.0, 1.0);
+                // ── Scratchy with smooth noise: continuous wave ────
+                // Each silhouette edge gets a unique but smooth
+                // wobble from 1D noise sampled along the edge.
+                // The edge hash determines the noise seed — same
+                // edge always gets the same wave pattern.
+                unsigned edgeSeed = (unsigned)(pa3[0]*7919 + pa3[1]*6271 + pa3[2]*5171);
+                double freq = silJitter * 0.3;  // noise frequency from jitter
 
-                // Edge direction in 3D and 2D
                 double ex1, ey1, ex2, ey2;
                 cam.projectPoint(pa3, 800, 600, ex1, ey1);
                 cam.projectPoint(pb3, 800, 600, ex2, ey2);
@@ -449,36 +466,30 @@ int main(int argc, char** argv) {
                 double edLen = sqrt(edx*edx + edy*edy);
                 if (edLen < 1.0) continue;
                 Vec3r edgeDir = pb3 - pa3;
-                double edgeLen3 = edgeDir.norm();
+                double px = -edy / edLen, py = edx / edLen;
 
                 for (int seg = 0; seg < silSubdiv; seg++) {
                     double t0 = (double)seg / silSubdiv;
                     double t1 = (double)(seg + 1) / silSubdiv;
 
-                    // 3D sub-segment endpoints along the edge
                     Vec3r s3a = pa3 + edgeDir * t0;
                     Vec3r s3b = pa3 + edgeDir * t1;
 
-                    // Jitter displacement perpendicular to edge in 2D
-                    double jx = eunit(edgeRng) * silJitter;
-                    double jy = eunit(edgeRng) * silJitter;
-                    // Perpendicular direction in 2D
-                    double px = -edy / edLen, py = edx / edLen;
+                    // Smooth noise displacement: same seed per edge,
+                    // sampled at t0 and t1 along the edge — coherent wave
+                    double jx = smoothNoise1d(t0 + 0.1, freq, edgeSeed) * silJitter;
+                    double jy = smoothNoise1d(t1 + 0.1, freq, edgeSeed) * silJitter;
 
                     double sx1, sy1, sx2, sy2;
                     cam.projectPoint(s3a, 800, 600, sx1, sy1);
                     cam.projectPoint(s3b, 800, 600, sx2, sy2);
+                    sx1 += px * jx; sy1 += py * jx;
+                    sx2 += px * jy; sy2 += py * jy;
 
-                    // Offset perpendicular
-                    sx1 += px * jx * 0.5;
-                    sy1 += py * jx * 0.5;
-                    sx2 += px * jy * 0.5;
-                    sy2 += py * jy * 0.5;
-
-                    // Vary thickness and pressure
-                    double pressure = 0.6 + 0.4 * fabs(eunit(edgeRng));
-                    double thick = 0.6 + 0.4 * pressure;
-                    double gray = 0.02 + 0.08 * (1.0 - pressure);
+                    // Vary thickness: thicker where noise amplitude peaks
+                    double pressure = 0.5 + 0.5 * fabs(jx / silJitter);
+                    double thick = 0.5 + 0.4 * pressure;
+                    double gray = 0.02 + 0.10 * (1.0 - pressure);
 
                     silStrokes.push_back({sx1, sy1, sx2, sy2, thick, gray});
                 }
@@ -519,9 +530,8 @@ int main(int argc, char** argv) {
             Vec3r pb3 = edge->GetbVertex()->GetVertex();
 
             if (scratchy) {
-                unsigned edgeHash = (unsigned)(pa3[0]*7919 + pa3[1]*6271 + pa3[2]*5171);
-                std::mt19937 edgeRng(edgeHash + seed + 9999);
-                std::uniform_real_distribution<double> eunit(-1.0, 1.0);
+                unsigned eSeed = (unsigned)(pa3[0]*7919 + pa3[1]*6271 + pa3[2]*5171);
+                double freq = silJitter * 0.2;
 
                 double ex1, ey1, ex2, ey2;
                 cam.projectPoint(pa3, 800, 600, ex1, ey1);
@@ -531,7 +541,6 @@ int main(int argc, char** argv) {
                 if (edLen < 1.0) continue;
                 Vec3r edgeDir = pb3 - pa3;
                 double px = -edy / edLen, py = edx / edLen;
-                // Fewer segments, lighter touch than silhouette
                 int fSub = std::max(2, silSubdiv / 2);
 
                 for (int seg = 0; seg < fSub; seg++) {
@@ -540,13 +549,13 @@ int main(int argc, char** argv) {
                     Vec3r s3a = pa3 + edgeDir * t0;
                     Vec3r s3b = pa3 + edgeDir * t1;
 
-                    double jx = eunit(edgeRng) * silJitter * 0.4;
-                    double jy = eunit(edgeRng) * silJitter * 0.4;
+                    double jx = smoothNoise1d(t0 + 0.1, freq, eSeed + 9999) * silJitter * 0.3;
+                    double jy = smoothNoise1d(t1 + 0.1, freq, eSeed + 9999) * silJitter * 0.3;
                     double sx1, sy1, sx2, sy2;
                     cam.projectPoint(s3a, 800, 600, sx1, sy1);
                     cam.projectPoint(s3b, 800, 600, sx2, sy2);
-                    sx1 += px * jx * 0.5; sy1 += py * jx * 0.5;
-                    sx2 += px * jy * 0.5; sy2 += py * jy * 0.5;
+                    sx1 += px * jx; sy1 += py * jx;
+                    sx2 += px * jy; sy2 += py * jy;
 
                     facetStrokes.push_back({sx1, sy1, sx2, sy2, 0.3, 0.55});
                 }
