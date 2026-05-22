@@ -577,19 +577,27 @@ int main(int argc, char** argv) {
                   << " strokes to " << svgPath << "\n";
     } else {
         PDFWriter pdf(outPath, 595.0, 842.0);
-        double sx = 595.0 / 800.0;
-        double sy = 842.0 / 600.0;
+        // Fit 800×600 image into A4 portrait, preserving aspect ratio
+        double scale = std::min(595.0 / 800.0, 842.0 / 600.0);
+        double ox = (595.0 - 800.0 * scale) / 2.0;
+        double oy = (842.0 - 600.0 * scale) / 2.0;
         for (auto& st : strokes) {
-            pdf.strokeLine(st.x1 * sx, st.y1 * sy, st.x2 * sx, st.y2 * sy,
-                           st.width * sx * 0.5, st.gray);
+            pdf.strokeLine(
+                ox + st.x1 * scale, oy + st.y1 * scale,
+                ox + st.x2 * scale, oy + st.y2 * scale,
+                st.width * scale * 0.5, st.gray);
         }
         for (auto& st : facetStrokes) {
-            pdf.strokeLine(st.x1 * sx, st.y1 * sy, st.x2 * sx, st.y2 * sy,
-                           st.width * sx * 0.5, st.gray);
+            pdf.strokeLine(
+                ox + st.x1 * scale, oy + st.y1 * scale,
+                ox + st.x2 * scale, oy + st.y2 * scale,
+                st.width * scale * 0.5, st.gray);
         }
         for (auto& st : silStrokes) {
-            pdf.strokeLine(st.x1 * sx, st.y1 * sy, st.x2 * sx, st.y2 * sy,
-                           1.0, 0.02);
+            pdf.strokeLine(
+                ox + st.x1 * scale, oy + st.y1 * scale,
+                ox + st.x2 * scale, oy + st.y2 * scale,
+                1.0, 0.02);
         }
         pdf.save();
         std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size()
