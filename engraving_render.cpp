@@ -379,11 +379,11 @@ static std::vector<Stroke> groundShadowPass(
     return strokes;
 }
 
-// ── Pass 5: Face-filling curve — single continuous path per face ────
-// For each visible face, generates one hatching path that fills the
-// face area.  The path sweeps across the face perpendicular to the
-// stroke direction (cross(n, v)), bouncing at the polygon edges.
-// Result: one connected curve per face that fills the face interior.
+// ── Pass 5: Face-filling zigzag — one continuous path per face ─────
+// For each visible face, generates a single zigzag curve that fills
+// the face — pen down, sweep back and forth, pen up.  Each sweep line
+// goes fully across the face; adjacent sweep lines connect at alternating
+// ends, producing one unbroken path per face.
 static std::vector<Stroke> faceFillPass(
     WingedEdge* we, const Camera& cam, const Vec3r& lightPos,
     int linesPerFace, double falloffExp)
@@ -399,38 +399,32 @@ static std::vector<Stroke> faceFillPass(
             Vec3r center = wxf->center();
             if (!cam.isFrontFacing(normal, center)) continue;
 
-            // Get face vertex positions
             std::vector<WVertex*> wvlist;
             wxf->RetrieveVertexList(wvlist);
             int nv = (int)wvlist.size();
             if (nv < 3) continue;
-            std::vector<Vec3r> verts3d;
-            for (auto wv : wvlist) verts3d.push_back(wv->GetVertex());
 
-            // Stroke direction: cross(n, view_dir)
-            Vec3r vd = cam.position - center;
-            vd.normalize();
+            // Stroke direction in 3D and 2D
+            Vec3r vd = cam.position - center; vd.normalize();
             Vec3r sd3 = normal ^ vd;
             double sdn = sd3.norm();
             if (sdn < 1e-9) sd3 = normal ^ Vec3r(0,1,0);
             else sd3 = sd3 * (1.0/sdn);
 
-            // Light on this face
+            // Light
             Vec3r tl = lightPos - center;
             double dLight = tl.norm();
             double ndotl = 0.0;
             if (dLight > 1e-9) { tl = tl * (1.0/dLight); ndotl = std::max(0.0, normal*tl); }
             double lightWeight = 1.0 - ndotl;
 
-            // Project face vertices to 2D and find stroke direction
+            // Project face to 2D
             std::vector<std::pair<double,double>> poly2d;
-            for (auto& v : verts3d) {
+            for (auto wv : wvlist) {
                 double vx, vy;
-                cam.projectPoint(v, 800, 600, vx, vy);
+                cam.projectPoint(wv->GetVertex(), 800, 600, vx, vy);
                 poly2d.push_back({vx, vy});
             }
-
-            // Stroke direction in 2D (project a point offset along sd3)
             double cx, cy, sdx, sdy;
             cam.projectPoint(center, 800, 600, cx, cy);
             cam.projectPoint(center + sd3 * 0.01, 800, 600, sdx, sdy);
@@ -438,24 +432,22 @@ static std::vector<Stroke> faceFillPass(
             double slen = sqrt(sdx*sdx + sdy*sdy);
             if (slen < 1e-9) continue;
             sdx /= slen; sdy /= slen;
-            double spx = -sdy, spy = sdx;  // perpendicular
+            double spx = -sdy, spy = sdx;
 
             // Sweep bounds
             double dMin = 1e30, dMax = -1e30;
             for (auto& p : poly2d) {
                 double d = spx * p.first + spy * p.second;
-                if (d < dMin) dMin = d;
-                if (d > dMax) dMax = d;
+                if (d < dMin) dMin = d; if (d > dMax) dMax = d;
             }
             double span = dMax - dMin;
             if (span < 1.0) continue;
 
-            // Generate sweep lines
+            // Collect all sweep lines as (left, right) pairs
+            struct SweepLine { double lx, ly, rx, ry; };
+            std::vector<SweepLine> sweepLines;
             for (int li = 0; li < linesPerFace; li++) {
-                double t = (li + 0.5) / linesPerFace;
-                double offset = dMin + t * span;
-
-                // Find intersections of sweep line with polygon
+                double offset = dMin + (li + 0.5) / linesPerFace * span;
                 std::vector<std::pair<double,double>> hits;
                 for (int ei = 0; ei < nv; ei++) {
                     int ej = (ei + 1) % nv;
@@ -466,26 +458,43 @@ static std::vector<Stroke> faceFillPass(
                     double lt = da / (da - db);
                     hits.push_back({
                         poly2d[ei].first + lt * (poly2d[ej].first - poly2d[ei].first),
-                        poly2d[ei].second + lt * (poly2d[ej].second - poly2d[ei].second)
-                    });
+                        poly2d[ei].second + lt * (poly2d[ej].second - poly2d[ei].second)});
                 }
                 if (hits.size() < 2) continue;
-                // Sort hits along stroke direction for consistent orientation
                 std::sort(hits.begin(), hits.end(),
                     [&](const std::pair<double,double>& a, const std::pair<double,double>& b) {
-                        return sdx*a.first+sdy*a.second < sdx*b.first+sdy*b.second;
-                    });
+                        return sdx*a.first+sdy*a.second < sdx*b.first+sdy*b.second; });
+                sweepLines.push_back({
+                    hits[0].first, hits[0].second,
+                    hits[1].first, hits[1].second});
+            }
+            if (sweepLines.empty()) continue;
 
-                // Emit line segments connecting sequential hit pairs
-                for (size_t hi = 0; hi + 1 < hits.size(); hi += 2) {
-                    double thick = 0.08 + 0.30 * lightWeight;
-                    double gray = 0.08 + 0.45 * lightWeight;
-                    strokes.push_back({
-                        hits[hi].first, hits[hi].second,
-                        hits[hi+1].first, hits[hi+1].second,
-                        thick, gray
-                    });
+            // ── Build continuous zigzag ──────────────────────────
+            // Connect sweep lines: line[0] L→R, then a connecting
+            // segment to line[1]'s R, then line[1] R→L, then connect
+            // to line[2]'s L, and so on.  Result: one unbroken path.
+            double thick = 0.08 + 0.30 * lightWeight;
+            double gray  = 0.08 + 0.45 * lightWeight;
+            double prevX = sweepLines[0].lx, prevY = sweepLines[0].ly;
+
+            for (size_t si = 0; si < sweepLines.size(); si++) {
+                bool forward = (si % 2 == 0);  // even: L→R, odd: R→L
+                double curX = forward ? sweepLines[si].lx : sweepLines[si].rx;
+                double curY = forward ? sweepLines[si].ly : sweepLines[si].ry;
+                double nxtX = forward ? sweepLines[si].rx : sweepLines[si].lx;
+                double nxtY = forward ? sweepLines[si].ry : sweepLines[si].ly;
+
+                // Connecting segment from previous position to start of this line
+                double dx = curX - prevX, dy = curY - prevY;
+                if (sqrt(dx*dx + dy*dy) > 0.5) {
+                    strokes.push_back({prevX, prevY, curX, curY, thick * 0.5, gray * 0.7});
                 }
+                // Main sweep across the face
+                strokes.push_back({curX, curY, nxtX, nxtY, thick, gray});
+
+                prevX = nxtX;
+                prevY = nxtY;
             }
         }
     }
