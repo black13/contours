@@ -72,13 +72,15 @@ static std::vector<Stroke> generateStrokes(
     std::mt19937 rng(seed);
     std::uniform_real_distribution<double> unit(0.0, 1.0);
 
-    // Collect visible faces
+    // Collect visible faces with vertex positions for area sampling
     struct FaceInfo {
+        std::vector<Vec3r> verts3d;  // face vertex positions in order
         Vec3r center;
         Vec3r normal;
-        double ndotl;
+        double area;
     };
     std::vector<FaceInfo> visibleFaces;
+    double totalArea = 0.0;
 
     for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
         WShape* shape = *sit;
@@ -89,14 +91,23 @@ static std::vector<Stroke> generateStrokes(
             Vec3r normal = wxf->GetNormal();
             if (!cam.isFrontFacing(normal, center)) continue;
 
-            Vec3r toLight = lightPos - center;
-            double dist = toLight.norm();
-            double ndotl = 0.0;
-            if (dist > 1e-9) {
-                Vec3r lightDir = toLight; lightDir.normalize();
-                ndotl = std::max(0.0, normal * lightDir);
+            // Get face vertex positions
+            std::vector<WVertex*> wvlist;
+            wxf->RetrieveVertexList(wvlist);
+            std::vector<Vec3r> verts3d;
+            double area = 0.0;
+            if (wvlist.size() >= 3) {
+                Vec3r a = wvlist[0]->GetVertex();
+                for (size_t i = 1; i + 1 < wvlist.size(); i++) {
+                    Vec3r b = wvlist[i]->GetVertex();
+                    Vec3r c = wvlist[i+1]->GetVertex();
+                    area += 0.5 * ((b - a) ^ (c - a)).norm();
+                }
+                for (auto wv : wvlist)
+                    verts3d.push_back(wv->GetVertex());
             }
-            visibleFaces.push_back({center, normal, ndotl});
+            visibleFaces.push_back({verts3d, center, normal, area});
+            totalArea += area;
         }
     }
 
@@ -107,15 +118,38 @@ static std::vector<Stroke> generateStrokes(
     if (nf == 0) return strokes;
 
     for (int s = 0; s < numSamples; s++) {
-        int fi = (int)(unit(rng) * nf);
-        if (fi >= nf) fi = nf - 1;
+        // Area-weighted face selection
+        double r = unit(rng) * totalArea;
+        double cumulative = 0.0;
+        int fi = 0;
+        for (int i = 0; i < nf; i++) {
+            cumulative += visibleFaces[i].area;
+            if (r <= cumulative) { fi = i; break; }
+        }
 
         FaceInfo& info = visibleFaces[fi];
-        Vec3r center = info.center;
         Vec3r normal = info.normal;
+        const auto& verts = info.verts3d;
 
-        // Light intensity: Lambert × 1/r^falloff
-        Vec3r toLight = lightPos - center;
+        // Random point on face polygon via triangle-fan barycentric
+        Vec3r samplePt;
+        int nv = (int)verts.size();
+        if (nv >= 3) {
+            Vec3r a = verts[0];
+            // Pick a random triangle in the fan
+            int tri = 1 + (int)(unit(rng) * (nv - 2));
+            if (tri >= nv - 1) tri = nv - 2;
+            Vec3r b = verts[tri];
+            Vec3r c = verts[tri + 1];
+            double u = unit(rng), v = unit(rng);
+            if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
+            samplePt = a + (b - a) * u + (c - a) * v;
+        } else {
+            samplePt = info.center;
+        }
+
+        // Light intensity at sample point: Lambert × 1/r^falloff
+        Vec3r toLight = lightPos - samplePt;
         double dist = toLight.norm();
         double lightIntensity = 0.0;
         if (dist > 1e-9) {
@@ -125,7 +159,7 @@ static std::vector<Stroke> generateStrokes(
         }
 
         // View obliquity
-        Vec3r viewDir = cam.position - center;
+        Vec3r viewDir = cam.position - samplePt;
         double vlen = viewDir.norm();
         if (vlen < 1e-9) continue;
         viewDir = viewDir * (1.0 / vlen);
@@ -143,8 +177,8 @@ static std::vector<Stroke> generateStrokes(
         else sd3 = sd3 * (1.0 / sdNorm);
 
         double halfLen = 15.0 * strokeProb * 0.5 * 0.02;
-        Vec3r ptA = center - sd3 * halfLen;
-        Vec3r ptB = center + sd3 * halfLen;
+        Vec3r ptA = samplePt - sd3 * halfLen;
+        Vec3r ptB = samplePt + sd3 * halfLen;
 
         double x1, y1, x2, y2;
         cam.projectPoint(ptA, 800, 600, x1, y1);
