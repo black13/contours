@@ -32,6 +32,18 @@ struct PDFWriter {
                 << x2 << " " << y2 << " l S\n";
     }
 
+    // Draw a cubic Bezier segment: P0 → P3 with control points CP1, CP2
+    void bezierSegment(double x0, double y0,
+                       double cx1, double cy1, double cx2, double cy2,
+                       double x3, double y3,
+                       double width, double gray) {
+        content << width << " w " << gray << " G "
+                << x0 << " " << y0 << " m "
+                << cx1 << " " << cy1 << " "
+                << cx2 << " " << cy2 << " "
+                << x3 << " " << y3 << " c S\n";
+    }
+
     void save() {
         std::ofstream f(path, std::ios::binary);
         if (!f) return;
