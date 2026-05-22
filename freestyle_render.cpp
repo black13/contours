@@ -73,28 +73,49 @@ int main(int argc, char** argv)
     detector.setSphereRadius(1.0f);
     detector.processShapes(*we);
 
-    // Count faces, edges, front-facing faces
+    // Count faces, edges, front-facing faces, and silhouette edges.
+    // WXFace::front() requires SilhouetteGeomEngine wiring that the
+    // standalone renderer doesn't fully set up.  We compute everything
+    // directly from n·v at the face center — same math as the Python oracle.
     int totalFaces = 0, totalEdges = 0, frontFacing = 0;
     int silhouette = 0, border = 0, crease = 0, ridge = 0, valley = 0, suggestive = 0;
     Vec3r cameraPos(0, 0, 5);
 
+    // Build per-face front/back map
+    std::map<int, bool> faceFrontMap;  // WXFace::GetId() -> front/back
     for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
         WShape* shape = *sit;
-        totalFaces += shape->GetFaceList().size();
-
         for (auto fit = shape->GetFaceList().begin(); fit != shape->GetFaceList().end(); ++fit) {
             WXFace* face = dynamic_cast<WXFace*>(*fit);
             if (!face) continue;
-            if (face->front()) ++frontFacing;
+            Vec3r center = face->center();
+            Vec3r normal = face->GetNormal();
+            Vec3r viewDir = cameraPos - center;
+            bool front = (normal * viewDir > 0);
+            faceFrontMap[face->GetId()] = front;
+            if (front) ++frontFacing;
         }
+        totalFaces += shape->GetFaceList().size();
 
+        // Classify edges: silhouette = 1 front + 1 back adjacent face
         for (auto eit = shape->GetEdgeList().begin(); eit != shape->GetEdgeList().end(); ++eit) {
             WXEdge* edge = dynamic_cast<WXEdge*>(*eit);
             if (!edge) continue;
-            totalEdges++;
+            ++totalEdges;
+
+            // Check adjacent faces' front/back status
+            WXFace* fa = dynamic_cast<WXFace*>(edge->GetaFace());
+            WXFace* fb = dynamic_cast<WXFace*>(edge->GetbFace());
+            bool frontA = fa ? (faceFrontMap.count(fa->GetId()) ? faceFrontMap[fa->GetId()] : false) : false;
+            bool frontB = fb ? (faceFrontMap.count(fb->GetId()) ? faceFrontMap[fb->GetId()] : false) : false;
+            if (!fa || !fb) {
+                ++border;
+            } else if (frontA != frontB) {
+                ++silhouette;
+            }
+
+            // Also count detector-classified natures
             unsigned n = edge->nature();
-            if (n & Nature::SILHOUETTE) ++silhouette;
-            if (n & Nature::BORDER) ++border;
             if (n & Nature::CREASE) ++crease;
             if (n & Nature::RIDGE) ++ridge;
             if (n & Nature::VALLEY) ++valley;
