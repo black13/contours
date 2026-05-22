@@ -396,15 +396,55 @@ int main(int argc, char** argv) {
     std::vector<Stroke> strokes = generateStrokes(
         we, cam, lightPos, numSamples, falloffExp, seed);
 
+    // ── Silhouette edges ───────────────────────────────────────────
+    // An edge is silhouette if exactly ONE of its two adjacent faces
+    // is front-facing.  These edges form the occluding contour — the
+    // boundary between visible and hidden surface.  We draw them as
+    // bold dark lines to anchor the scattered strokes.
+    //
+    // Algorithm: iterate all edges in the winged-edge.  For each edge
+    // with two adjacent faces, check front/back status of both.  If
+    // one is front and the other back, project the edge endpoints
+    // and emit a bold dark Stroke.
+    std::vector<Stroke> silStrokes;
+    for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
+        WShape* shape = *sit;
+        for (auto eit = shape->GetEdgeList().begin();
+             eit != shape->GetEdgeList().end(); ++eit) {
+            WXEdge* edge = dynamic_cast<WXEdge*>(*eit);
+            if (!edge) continue;
+            WXFace* fa = dynamic_cast<WXFace*>(edge->GetaFace());
+            WXFace* fb = dynamic_cast<WXFace*>(edge->GetbFace());
+            if (!fa || !fb) continue;  // border edge — skip
+            bool frontA = cam.isFrontFacing(fa->GetNormal(), fa->center());
+            bool frontB = cam.isFrontFacing(fb->GetNormal(), fb->center());
+            if (frontA == frontB) continue;  // both front or both back
+
+            // Silhouette edge — project endpoints and emit bold dark stroke
+            WVertex* va = edge->GetaVertex();
+            WVertex* vb = edge->GetbVertex();
+            double x1, y1, x2, y2;
+            cam.projectPoint(va->GetVertex(), 800, 600, x1, y1);
+            cam.projectPoint(vb->GetVertex(), 800, 600, x2, y2);
+            silStrokes.push_back({x1, y1, x2, y2, 1.2, 0.02});
+        }
+    }
+
+    std::cerr << "Silhouette edges: " << silStrokes.size() << "\n";
+
     // ── Output ─────────────────────────────────────────────────────
     if (useSvg) {
         std::ofstream svg(svgPath);
         svgHeader(svg, 800, 600);
+        // Silhouette edges first (behind strokes? no — on top, bold)
         for (auto& st : strokes)
+            svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+        for (auto& st : silStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         svgFooter(svg);
         svg.close();
-        std::cerr << "Wrote " << strokes.size() << " strokes to " << svgPath << "\n";
+        std::cerr << "Wrote " << strokes.size() + silStrokes.size()
+                  << " strokes to " << svgPath << "\n";
     } else {
         // Map 800×600 image coords to A4 portrait (595×842 PDF points)
         PDFWriter pdf(outPath, 595.0, 842.0);
@@ -416,8 +456,16 @@ int main(int argc, char** argv) {
                 st.x2 * sx, st.y2 * sy,
                 st.width * sx * 0.5, st.gray);
         }
+        // Silhouette edges: bold (1.2pt × scale) and dark (gray 0.02)
+        for (auto& st : silStrokes) {
+            pdf.strokeLine(
+                st.x1 * sx, st.y1 * sy,
+                st.x2 * sx, st.y2 * sy,
+                1.0, 0.02);
+        }
         pdf.save();
-        std::cerr << "Wrote " << strokes.size() << " strokes to " << outPath << "\n";
+        std::cerr << "Wrote " << strokes.size() + silStrokes.size()
+                  << " strokes to " << outPath << "\n";
     }
 
     return 0;
