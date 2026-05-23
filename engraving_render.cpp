@@ -165,7 +165,17 @@ static void svgLine(std::ostream& out,
 
 struct Stroke {
     double x1, y1, x2, y2, width, gray;
+    double cx1, cy1, cx2, cy2;  // Bezier control points (unused if !bezier)
+    bool bezier;
 };
+
+// Helper to create a Bezier stroke with control points
+static Stroke makeBezier(double x0, double y0, double cp1x, double cp1y,
+                          double cp2x, double cp2y, double x1, double y1,
+                          double w, double g) {
+    Stroke s = {x0, y0, x1, y1, w, g, cp1x, cp1y, cp2x, cp2y, true};
+    return s;
+}
 
 static int pencilSeed = 0;
 
@@ -439,7 +449,7 @@ static std::vector<Stroke> groundShadowPass(
 // ends, producing one unbroken path per face.
 static std::vector<Stroke> faceFillPass(
     WingedEdge* we, const Camera& cam, const Vec3r& lightPos,
-    int linesPerFace, double falloffExp)
+    int linesPerFace, double falloffExp, bool bezier = false)
 {
     std::vector<Stroke> strokes;
 
@@ -523,31 +533,60 @@ static std::vector<Stroke> faceFillPass(
             }
             if (sweepLines.empty()) continue;
 
-            // ── Build continuous zigzag ──────────────────────────
-            // Connect sweep lines: line[0] L→R, then a connecting
-            // segment to line[1]'s R, then line[1] R→L, then connect
-            // to line[2]'s L, and so on.  Result: one unbroken path.
+            // ── Build continuous zigzag (straight or Bezier) ───────
             double thick = 0.08 + 0.30 * lightWeight;
             double gray  = 0.08 + 0.45 * lightWeight;
-            double prevX = sweepLines[0].lx, prevY = sweepLines[0].ly;
 
-            for (size_t si = 0; si < sweepLines.size(); si++) {
-                bool forward = (si % 2 == 0);  // even: L→R, odd: R→L
-                double curX = forward ? sweepLines[si].lx : sweepLines[si].rx;
-                double curY = forward ? sweepLines[si].ly : sweepLines[si].ry;
-                double nxtX = forward ? sweepLines[si].rx : sweepLines[si].lx;
-                double nxtY = forward ? sweepLines[si].ry : sweepLines[si].ly;
-
-                // Connecting segment from previous position to start of this line
-                double dx = curX - prevX, dy = curY - prevY;
-                if (sqrt(dx*dx + dy*dy) > 0.5) {
-                    strokes.push_back({prevX, prevY, curX, curY, thick * 0.5, gray * 0.7});
+            if (bezier) {
+                // Collect all endpoints into a point sequence.
+                // Catmull-Rom spline → cubic Bezier conversion.
+                std::vector<std::pair<double,double>> pts;
+                for (size_t si = 0; si < sweepLines.size(); si++) {
+                    bool fwd = (si % 2 == 0);
+                    double x0 = fwd ? sweepLines[si].lx : sweepLines[si].rx;
+                    double y0 = fwd ? sweepLines[si].ly : sweepLines[si].ry;
+                    double x1 = fwd ? sweepLines[si].rx : sweepLines[si].lx;
+                    double y1 = fwd ? sweepLines[si].ry : sweepLines[si].ly;
+                    if (pts.empty()) pts.push_back({x0, y0});
+                    pts.push_back({x1, y1});
                 }
-                // Main sweep across the face
-                strokes.push_back({curX, curY, nxtX, nxtY, thick, gray});
-
-                prevX = nxtX;
-                prevY = nxtY;
+                size_t np = pts.size();
+                if (np < 4) {
+                    // Fallback: straight segment
+                    for (size_t i = 0; i + 1 < np; i++)
+                        strokes.push_back({pts[i].first, pts[i].second,
+                                           pts[i+1].first, pts[i+1].second,
+                                           thick, gray});
+                } else {
+                    for (size_t i = 0; i + 1 < np; i++) {
+                        double px = pts[i].first, py = pts[i].second;
+                        double qx = pts[i+1].first, qy = pts[i+1].second;
+                        double px0 = (i>0) ? pts[i-1].first : px-(qx-px);
+                        double py0 = (i>0) ? pts[i-1].second : py-(qy-py);
+                        double qx1 = (i+2<np) ? pts[i+2].first : qx+(qx-px);
+                        double qy1 = (i+2<np) ? pts[i+2].second : qy+(qy-py);
+                        double cp1x = px + (qx - px0)/6.0;
+                        double cp1y = py + (qy - py0)/6.0;
+                        double cp2x = qx - (qx1 - px)/6.0;
+                        double cp2y = qy - (qy1 - py)/6.0;
+                        strokes.push_back(makeBezier(px, py, cp1x, cp1y, cp2x, cp2y, qx, qy, thick, gray));
+                    }
+                }
+            } else {
+                double prevX = sweepLines[0].lx, prevY = sweepLines[0].ly;
+                for (size_t si = 0; si < sweepLines.size(); si++) {
+                    bool forward = (si % 2 == 0);
+                    double curX = forward ? sweepLines[si].lx : sweepLines[si].rx;
+                    double curY = forward ? sweepLines[si].ly : sweepLines[si].ry;
+                    double nxtX = forward ? sweepLines[si].rx : sweepLines[si].lx;
+                    double nxtY = forward ? sweepLines[si].ry : sweepLines[si].ly;
+                    double dx = curX - prevX, dy = curY - prevY;
+                    if (sqrt(dx*dx + dy*dy) > 0.5) {
+                        strokes.push_back({prevX, prevY, curX, curY, thick * 0.5, gray * 0.7});
+                    }
+                    strokes.push_back({curX, curY, nxtX, nxtY, thick, gray});
+                    prevX = nxtX; prevY = nxtY;
+                }
             }
         }
     }
@@ -571,6 +610,7 @@ int main(int argc, char** argv) {
                   << "  --sil-jitter N  silhouette jitter in px (default 2.5)\n"
                   << "  --sil-subdiv N  silhouette sub-segments per edge (default 8)\n"
                   << "  --fill-lines N  hatch lines per face (default 12)\n"
+                  << "  --bezier        render face fill as smooth Bezier curves\n"
                   << "  --pencil        graphite pencil texture (taper + grain)\n"
                   << "  --pencil-subsegs N  sub-segments per stroke (default 8)\n";
         return 1;
@@ -793,9 +833,12 @@ int main(int argc, char** argv) {
 
     std::cerr << "Shadow strokes: " << shadowStrokes.size() << "\n";
 
+    bool bezierFill = args.hasFlag("--bezier");
+    int bezierSubdiv = args.getInt("--bezier-subdiv", 16);
+
     // ── Face fill hatching ─────────────────────────────────────────
     std::vector<Stroke> fillStrokes = faceFillPass(
-        we, cam, lightPos, args.getInt("--fill-lines", 12), falloffExp);
+        we, cam, lightPos, args.getInt("--fill-lines", 12), falloffExp, bezierFill);
 
     std::cerr << "Face fill strokes: " << fillStrokes.size() << "\n";
 
@@ -820,8 +863,19 @@ int main(int argc, char** argv) {
         svgHeader(svg, 800, 600);
         for (auto& st : strokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
-        for (auto& st : fillStrokes)
-            svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+        for (auto& st : fillStrokes) {
+            if (st.bezier) {
+                svg << "  <path d=\"M" << st.x1 << "," << st.y1
+                    << " C" << st.cx1 << "," << st.cy1
+                    << " " << st.cx2 << "," << st.cy2
+                    << " " << st.x2 << "," << st.y2
+                    << "\" fill=\"none\" stroke=\"rgb("
+                    << (int)(st.gray*255) << "," << (int)(st.gray*255) << "," << (int)(st.gray*255)
+                    << ")\" stroke-width=\"" << st.width << "\"/>\n";
+            } else {
+                svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+            }
+        }
         for (auto& st : facetStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         for (auto& st : silStrokes)
@@ -843,9 +897,18 @@ int main(int argc, char** argv) {
                            st.width * scale * 0.5, st.gray);
         }
         for (auto& st : fillStrokes) {
-            pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
-                           ox + st.x2 * scale, oy + st.y2 * scale,
-                           st.width * scale * 0.5, st.gray);
+            if (st.bezier) {
+                pdf.bezierSegment(
+                    ox + st.x1 * scale, oy + st.y1 * scale,
+                    ox + st.cx1 * scale, oy + st.cy1 * scale,
+                    ox + st.cx2 * scale, oy + st.cy2 * scale,
+                    ox + st.x2 * scale, oy + st.y2 * scale,
+                    st.width * scale * 0.5, st.gray);
+            } else {
+                pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
+                               ox + st.x2 * scale, oy + st.y2 * scale,
+                               st.width * scale * 0.5, st.gray);
+            }
         }
         for (auto& st : facetStrokes) {
             pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
