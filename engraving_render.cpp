@@ -569,7 +569,10 @@ int main(int argc, char** argv) {
                   << "  --clean         draw silhouette as single bold line\n"
                   << "                  (default: scratchy, short jittered strokes)\n"
                   << "  --sil-jitter N  silhouette jitter in px (default 2.5)\n"
-                  << "  --sil-subdiv N  silhouette sub-segments per edge (default 8)\n";
+                  << "  --sil-subdiv N  silhouette sub-segments per edge (default 8)\n"
+                  << "  --fill-lines N  hatch lines per face (default 12)\n"
+                  << "  --pencil        graphite pencil texture (taper + grain)\n"
+                  << "  --pencil-subsegs N  sub-segments per stroke (default 8)\n";
         return 1;
     }
 
@@ -795,6 +798,21 @@ int main(int argc, char** argv) {
         we, cam, lightPos, args.getInt("--fill-lines", 12), falloffExp);
 
     std::cerr << "Face fill strokes: " << fillStrokes.size() << "\n";
+
+    bool pencil = args.hasFlag("--pencil");
+    int pencilSubsegs = args.getInt("--pencil-subsegs", 8);
+    double pencilGrain = args.getDouble("--pencil-grain", 0.18);
+
+    // ── Pencil shader (post-process all strokes) ────────────────────
+    if (pencil) {
+        strokes      = pencilShade(strokes,      pencilSubsegs, pencilGrain);
+        fillStrokes  = pencilShade(fillStrokes,  pencilSubsegs, pencilGrain);
+        silStrokes   = pencilShade(silStrokes,   pencilSubsegs * 2, pencilGrain);
+        facetStrokes = pencilShade(facetStrokes, pencilSubsegs, pencilGrain);
+        shadowStrokes= pencilShade(shadowStrokes,pencilSubsegs, pencilGrain);
+        std::cerr << "Pencil shaded (subsegs=" << pencilSubsegs
+                  << ", grain=" << pencilGrain << ")\n";
+    }
 
     // ── Output ─────────────────────────────────────────────────────
     if (useSvg) {
