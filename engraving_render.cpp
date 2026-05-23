@@ -155,14 +155,67 @@ static void svgLine(std::ostream& out,
         << " stroke-linecap=\"round\"/>\n";
 }
 
-// ── Stroke data ───────────────────────────────────────────────────────
+// ── Pencil shader: graphite texture with Sousa & Buchanan taper ──────
+// Breaks a stroke into N sub-segments with:
+//   - Tapered width (thinnest at ends, thickest at middle)
+//   - Grain noise (Perlin-like variation along the stroke)
+//   - Pressure mapped to n·l (dark in shadow, light in sun)
 //
-// A Stroke is a 2D line segment with appearance.  Width is in PDF points
-// (SVG pixels), gray is 0.0 (black) to 1.0 (white).
+// Returns a vector of pencil-textured sub-strokes.
 
 struct Stroke {
     double x1, y1, x2, y2, width, gray;
 };
+
+static int pencilSeed = 0;
+
+static void emitPencilStroke(
+    std::vector<Stroke>& out,
+    double x1, double y1, double x2, double y2,
+    double width, double gray,
+    int subsegs = 8, double grainAmp = 0.18)
+{
+    for (int si = 0; si < subsegs; si++) {
+        double t0 = (double)si / subsegs;
+        double t1 = (double)(si + 1) / subsegs;
+
+        double taper0 = 1.0 - fabs(2.0 * t0 - 1.0);
+        double taper1 = 1.0 - fabs(2.0 * t1 - 1.0);
+        taper0 = 0.15 + 0.85 * taper0;
+        taper1 = 0.15 + 0.85 * taper1;
+
+        double grain0 = smoothNoise1d(t0 + pencilSeed * 0.001, 6.0, 999);
+        double grain1 = smoothNoise1d(t1 + pencilSeed * 0.001, 6.0, 999);
+        double grain = (grain0 + grain1) * 0.5;
+
+        double w = width * (taper0 + taper1) * 0.5 * (1.0 + grain * grainAmp);
+        double g = gray * (1.0 + grain * 0.25);
+        if (g < 0.02) g = 0.02;
+        if (g > 1.0) g = 1.0;
+        if (w < 0.03) w = 0.03;
+
+        double sx = x1 + (x2 - x1) * t0;
+        double sy = y1 + (y2 - y1) * t0;
+        double ex = x1 + (x2 - x1) * t1;
+        double ey = y1 + (y2 - y1) * t1;
+
+        out.push_back({sx, sy, ex, ey, w, g});
+    }
+    pencilSeed++;
+}
+
+static std::vector<Stroke> pencilShade(
+    const std::vector<Stroke>& strokes,
+    int subsegs, double grainAmp)
+{
+    std::vector<Stroke> out;
+    for (auto& st : strokes) {
+        emitPencilStroke(out, st.x1, st.y1, st.x2, st.y2,
+                         st.width, st.gray, subsegs, grainAmp);
+    }
+    return out;
+}
+
 
 // ── generateStrokes — the core kernel ─────────────────────────────────
 //
