@@ -857,6 +857,63 @@ int main(int argc, char** argv) {
 
     std::cerr << "Facet edges: " << facetStrokes.size() << "\n";
 
+    // ── Border edges (open mesh boundaries) ──────────────────────────
+    // Edges with only one adjacent face — the boundary of the mesh.
+    // Drawn as bold lines to define the edge of a flat plane or the
+    // rim of an open surface.  Scratchy like silhouette for hand feel.
+    std::vector<Stroke> borderStrokes;
+    for (auto sit = we->getWShapes().begin(); sit != we->getWShapes().end(); ++sit) {
+        WShape* shape = *sit;
+        for (auto eit = shape->GetEdgeList().begin();
+             eit != shape->GetEdgeList().end(); ++eit) {
+            WXEdge* edge = dynamic_cast<WXEdge*>(*eit);
+            if (!edge) continue;
+            WXFace* fa = dynamic_cast<WXFace*>(edge->GetaFace());
+            WXFace* fb = dynamic_cast<WXFace*>(edge->GetbFace());
+            if (fa && fb) continue;  // interior edge — skip
+
+            // Border edge — only one adjacent face
+            WVertex* va = edge->GetaVertex();
+            WVertex* vb = edge->GetbVertex();
+            Vec3r pa3 = va->GetVertex();
+            Vec3r pb3 = vb->GetVertex();
+
+            if (scratchy) {
+                unsigned eSeed = (unsigned)(pa3[0]*7919 + pa3[1]*6271 + pa3[2]*5171);
+                double freq = silJitter * 0.25;
+                double ex1, ey1, ex2, ey2;
+                cam.projectPoint(pa3, 800, 600, ex1, ey1);
+                cam.projectPoint(pb3, 800, 600, ex2, ey2);
+                double edx = ex2 - ex1, edy = ey2 - ey1;
+                double edLen = sqrt(edx*edx + edy*edy);
+                if (edLen < 1.0) continue;
+                Vec3r edgeDir = pb3 - pa3;
+                double px = -edy / edLen, py = edx / edLen;
+                for (int seg = 0; seg < silSubdiv; seg++) {
+                    double t0 = (double)seg / silSubdiv;
+                    double t1 = (double)(seg + 1) / silSubdiv;
+                    Vec3r s3a = pa3 + edgeDir * t0;
+                    Vec3r s3b = pa3 + edgeDir * t1;
+                    double jx = smoothNoise1d(t0 + 0.1, freq, eSeed + 55555) * silJitter * 0.5;
+                    double jy = smoothNoise1d(t1 + 0.1, freq, eSeed + 55555) * silJitter * 0.5;
+                    double sx1, sy1, sx2, sy2;
+                    cam.projectPoint(s3a, 800, 600, sx1, sy1);
+                    cam.projectPoint(s3b, 800, 600, sx2, sy2);
+                    sx1 += px * jx; sy1 += py * jx;
+                    sx2 += px * jy; sy2 += py * jy;
+                    borderStrokes.push_back({sx1, sy1, sx2, sy2, 0.9, 0.04});
+                }
+            } else {
+                double x1, y1, x2, y2;
+                cam.projectPoint(pa3, 800, 600, x1, y1);
+                cam.projectPoint(pb3, 800, 600, x2, y2);
+                borderStrokes.push_back({x1, y1, x2, y2, 0.9, 0.04});
+            }
+        }
+    }
+
+    std::cerr << "Border edges: " << borderStrokes.size() << "\n";
+
     // ── Ground shadow ───────────────────────────────────────────────
     std::vector<Stroke> shadowStrokes = groundShadowPass(
         we, cam, lightPos, numSamples / 2, seed);
@@ -902,6 +959,7 @@ int main(int argc, char** argv) {
         strokes      = pencilShade(strokes,      pencilSubsegs, pencilGrain);
         fillStrokes  = pencilShade(fillStrokes,  pencilSubsegs, pencilGrain);
         silStrokes   = pencilShade(silStrokes,   pencilSubsegs * 2, pencilGrain);
+        borderStrokes= pencilShade(borderStrokes,pencilSubsegs, pencilGrain);
         facetStrokes = pencilShade(facetStrokes, pencilSubsegs, pencilGrain);
         shadowStrokes= pencilShade(shadowStrokes,pencilSubsegs, pencilGrain);
         std::cerr << "Pencil shaded (subsegs=" << pencilSubsegs
@@ -931,11 +989,13 @@ int main(int argc, char** argv) {
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         for (auto& st : silStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
+        for (auto& st : borderStrokes)
+            svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         for (auto& st : shadowStrokes)
             svgLine(svg, st.x1, st.y1, st.x2, st.y2, st.width, st.gray);
         svgFooter(svg);
         svg.close();
-        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size() + shadowStrokes.size() + fillStrokes.size()
+        std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size() + shadowStrokes.size() + fillStrokes.size() + borderStrokes.size()
                   << " strokes to " << svgPath << "\n";
     } else {
         PDFWriter pdf(outPath, 595.0, 842.0);
@@ -971,6 +1031,11 @@ int main(int argc, char** argv) {
                            ox + st.x2 * scale, oy + st.y2 * scale,
                            1.0, 0.02);
         }
+        for (auto& st : borderStrokes) {
+            pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
+                           ox + st.x2 * scale, oy + st.y2 * scale,
+                           st.width * scale * 0.5, st.gray);
+        }
         for (auto& st : shadowStrokes) {
             pdf.strokeLine(ox + st.x1 * scale, oy + st.y1 * scale,
                            ox + st.x2 * scale, oy + st.y2 * scale,
@@ -990,7 +1055,7 @@ int main(int argc, char** argv) {
         }
         pdf.save();
         std::cerr << "Wrote " << strokes.size() + silStrokes.size() + facetStrokes.size()
-                           + shadowStrokes.size() + fillStrokes.size()
+                           + shadowStrokes.size() + fillStrokes.size() + borderStrokes.size()
                   << " strokes to " << outPath << "\n";
     }
 
