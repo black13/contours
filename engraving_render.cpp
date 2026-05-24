@@ -631,6 +631,7 @@ int main(int argc, char** argv) {
                   << " <input.ply> [--output out.pdf|--svg out.svg]\n"
                   << "  --samples N     Monte Carlo samples (default 2000)\n"
                   << "  --light-x/y/z   point light position (default 1,4,3)\n"
+                  << "  --camera-x/y/z  camera position (default 2.8,2.0,3.5)\n"
                   << "  --falloff N     light falloff exponent (default 2 = 1/r^2)\n"
                   << "  --seed N        random seed (default 42)\n"
                   << "  --svg PATH      output SVG instead of PDF\n"
@@ -676,7 +677,11 @@ int main(int argc, char** argv) {
     if (!we) { std::cerr << "Winged-edge build failed\n"; return 1; }
 
     // ── Camera ─────────────────────────────────────────────────────
-    Camera cam;
+    Camera cam(
+        Vec3r(args.getDouble("--camera-x", 2.8),
+              args.getDouble("--camera-y", 2.0),
+              args.getDouble("--camera-z", 3.5)),
+        Vec3r(0, 0, 0), Vec3r(0, 1, 0), 35.0);
 
     // ── Silhouette engine setup (required by FEdgeXDetector) ──────
     real mv[4][4] = {{0}};
