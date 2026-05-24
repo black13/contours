@@ -229,15 +229,17 @@ static std::vector<Stroke> pencilShade(
 
 // ── generateStrokes — the core kernel ─────────────────────────────────
 //
-// This is the C++ equivalent of Python's monte_carlo_strokes().
-// For each of numSamples iterations:
-//   1. Pick a visible face (area-weighted).
-//   2. Pick a random point on that face (barycentric).
-//   3. Compute light intensity, view obliquity, stroke probability.
-//   4. If the probability gate passes, compute direction and endpoints.
-//   5. Append a Stroke to the output vector.
+// For each sample: compute light intensity (n·l/r²), shadow state,
+// stroke probability, direction, and appearance.
 //
-// Returns the vector of all generated strokes.
+// Shadow rule: if a light ray from the sample point toward the light
+// is blocked by the winged-edge object, the point is in shadow.
+// Shadow modulates: thicker, darker strokes.  Lines accumulate in
+// shadow — same geometry, different line energy.
+//
+// Shadow check: cast a ray from samplePt toward lightPos, check
+// face-plane intersections against all winged-edge faces.  Brute-force
+// (Embree BVH would accelerate this).
 
 static std::vector<Stroke> generateStrokes(
     WingedEdge* we,
@@ -305,6 +307,26 @@ static std::vector<Stroke> generateStrokes(
     std::vector<Stroke> strokes;
     int nf = (int)visibleFaces.size();
     if (nf == 0) return strokes;
+
+    // ── Shadow check helper ─────────────────────────────────────────
+    // For a point on the surface, cast a ray toward the light and
+    // check if any winged-edge face blocks it (brute-force).
+    auto isShadowed = [&](const Vec3r& pt, const Vec3r& lPos) -> bool {
+        Vec3r toL = lPos - pt;
+        double rayLen = toL.norm();
+        if (rayLen < 1e-9) return false;
+        Vec3r rayDir = toL * (1.0 / rayLen);
+        for (auto s2 = we->getWShapes().begin(); s2 != we->getWShapes().end(); ++s2)
+            for (auto f2 = (*s2)->GetFaceList().begin(); f2 != (*s2)->GetFaceList().end(); ++f2) {
+                WXFace* wf = dynamic_cast<WXFace*>(*f2);
+                if (!wf) continue;
+                double denom = wf->GetNormal() * rayDir;
+                if (denom >= -1e-9) continue;
+                double t = (wf->GetNormal() * (wf->center() - pt)) / denom;
+                if (t > 1e-6 && t < rayLen - 1e-6) return true;
+            }
+        return false;
+    };
 
     // ── Monte Carlo loop ───────────────────────────────────────────
     for (int s = 0; s < numSamples; s++) {
@@ -391,10 +413,17 @@ static std::vector<Stroke> generateStrokes(
         cam.projectPoint(ptB, 800, 600, x2, y2);
 
         // ── Stroke appearance ────────────────────────────────────
-        // Thicker and darker where the stroke probability was higher
-        // (i.e., in shadow, where light intensity is low).
+        // Thicker and darker where light is weaker or the point is
+        // in shadow.  Shadow doubles the base thickness and cuts
+        // gray by half — same geometry, different line energy.
         double thick = 0.10 + 0.55 * (1.0 - strokeProb);
         double gray = 0.03 + 0.52 * (1.0 - strokeProb);
+
+        if (isShadowed(samplePt, lightPos)) {
+            thick *= 1.6;
+            gray *= 0.55;
+            if (gray < 0.02) gray = 0.02;
+        }
 
         strokes.push_back({x1, y1, x2, y2, thick, gray});
     }
@@ -611,6 +640,7 @@ int main(int argc, char** argv) {
                   << "  --sil-subdiv N  silhouette sub-segments per edge (default 8)\n"
                   << "  --fill-lines N  hatch lines per face (default 12)\n"
                   << "  --bezier        render face fill as smooth Bezier curves\n"
+                  << "  --pencil-layers N  cross-hatch layers at rotated angles (default 1)\n"
                   << "  --pencil        graphite pencil texture (taper + grain)\n"
                   << "  --pencil-subsegs N  sub-segments per stroke (default 8)\n";
         return 1;
@@ -836,11 +866,32 @@ int main(int argc, char** argv) {
     bool bezierFill = args.hasFlag("--bezier");
     int bezierSubdiv = args.getInt("--bezier-subdiv", 16);
 
-    // ── Face fill hatching ─────────────────────────────────────────
-    std::vector<Stroke> fillStrokes = faceFillPass(
-        we, cam, lightPos, args.getInt("--fill-lines", 12), falloffExp, bezierFill);
+    // ── Face fill hatching (single or multi-layer) ────────────────
+    int pencilLayers = args.getInt("--pencil-layers", 1);
+    std::vector<Stroke> fillStrokes;
+    for (int layer = 0; layer < pencilLayers; layer++) {
+        // Rotate camera slightly per layer for cross-hatching.
+        // The stroke direction = cross(n, view_dir) so rotating the
+        // camera changes the fill angle naturally.
+        double angle = layer * 8.0 * M_PI / 180.0;  // 8° per layer
+        double cosA = cos(angle), sinA = sin(angle);
+        Vec3r layerCam = cam.position;
+        // Rotate around Y axis
+        Vec3r cp = layerCam - cam.target;
+        double rx = cp[0]*cosA - cp[2]*sinA;
+        double rz = cp[0]*sinA + cp[2]*cosA;
+        layerCam[0] = cam.target[0] + rx;
+        layerCam[2] = cam.target[2] + rz;
+        Camera layerCamera(layerCam, cam.target, cam.up, cam.fovY_degrees);
 
-    std::cerr << "Face fill strokes: " << fillStrokes.size() << "\n";
+        auto layerStrokes = faceFillPass(
+            we, layerCamera, lightPos,
+            args.getInt("--fill-lines", 12), falloffExp, bezierFill);
+        fillStrokes.insert(fillStrokes.end(), layerStrokes.begin(), layerStrokes.end());
+    }
+
+    std::cerr << "Face fill strokes: " << fillStrokes.size()
+              << " (layers=" << pencilLayers << ")\n";
 
     bool pencil = args.hasFlag("--pencil");
     int pencilSubsegs = args.getInt("--pencil-subsegs", 8);
